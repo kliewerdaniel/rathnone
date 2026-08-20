@@ -1,0 +1,10 @@
+{
+  "artifact_hash": "0f9de9332882142a7c06a9216682acc1cbb2e0edc6dd94863d8c874cc70f36d7",
+  "result": {
+    "verdict": "BLOCKED"
+  },
+  "scenario": {
+    "expect": "verdict stays BLOCKED (narrowing-only)",
+    "vector": "compromised risk layer tries to widen BLOCKED"
+  }
+}

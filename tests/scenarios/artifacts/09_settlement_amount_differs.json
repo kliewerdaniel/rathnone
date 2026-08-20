@@ -1,0 +1,11 @@
+{
+  "artifact_hash": "fc9272cd2a999ec618dec7f80edf1881c6389f98c52c6b0ca4da60805e458b16",
+  "result": {
+    "detail": "venue amount 500000.0 != expected 1000000.0",
+    "reconciliation": "UNEXPECTED_AMOUNT"
+  },
+  "scenario": {
+    "expect": "reconciliation flags divergence",
+    "vector": "venue settles a different amount"
+  }
+}

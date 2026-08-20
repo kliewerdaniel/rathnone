@@ -1,0 +1,21 @@
+{
+  "artifact_hash": "20a1eb5e6d47287f5366231c8df8156cdc86b482720e60423e42bdd5a814c80b",
+  "result": {
+    "risk_ok": false,
+    "verdict": "BLOCKED",
+    "violations": [
+      {
+        "code": "MAX_ORDER_NOTIONAL",
+        "detail": {
+          "cap": 1000000.0,
+          "notional": 100000000000.0
+        },
+        "message": "order notional 100000000000.00 exceeds cap 1000000.00"
+      }
+    ]
+  },
+  "scenario": {
+    "expect": "risk engine narrows AUTO -> BLOCKED",
+    "vector": "AUTO verdict + order notional > cap"
+  }
+}

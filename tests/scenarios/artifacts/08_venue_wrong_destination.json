@@ -1,0 +1,11 @@
+{
+  "artifact_hash": "6d302ac34c9c90441617db377deb3467f162568ddd9dd08adca02d7634309672",
+  "result": {
+    "reconciliation": "UNEXPECTED_DESTINATION",
+    "state": "FAILED"
+  },
+  "scenario": {
+    "expect": "reconciliation FAILS, state FAILED",
+    "vector": "venue settles to a different address"
+  }
+}

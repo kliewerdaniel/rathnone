@@ -1,0 +1,10 @@
+{
+  "artifact_hash": "7d4548fd0e7a3745346adfda167e941d459fe6cb71570554c3b452aef5358d96",
+  "result": {
+    "registered_tenant": "T1_REAL"
+  },
+  "scenario": {
+    "expect": "isolation: T2 cannot advance T1's action",
+    "vector": "action registered for T1 executed via T2"
+  }
+}

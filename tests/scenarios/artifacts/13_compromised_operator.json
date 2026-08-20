@@ -1,0 +1,10 @@
+{
+  "artifact_hash": "6f1a377494bc3b1b877a09d397a543c3368850f51c42313036c0000285c2e6b7",
+  "result": {
+    "blocked": "HUMAN verdict requires a valid signed operator approval binding this action"
+  },
+  "scenario": {
+    "expect": "BLOCKED (signature verify fails)",
+    "vector": "forge operator approval signature"
+  }
+}

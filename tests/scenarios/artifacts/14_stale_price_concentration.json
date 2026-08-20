@@ -1,0 +1,20 @@
+{
+  "artifact_hash": "433c02cead7d5fc1bd2c0435c2d8bc9461affb5628e400beaa17a4a9d1f32d01",
+  "result": {
+    "ok": false,
+    "violations": [
+      {
+        "code": "CONCENTRATION_LIMIT",
+        "detail": {
+          "cap": 0.5,
+          "fraction": 0.6
+        },
+        "message": "instrument BTC already at 60.00% of AUM (cap 50.00%)"
+      }
+    ]
+  },
+  "scenario": {
+    "expect": "BLOCKED by risk concentration (narrowing)",
+    "vector": "oversized buy breaches concentration limit"
+  }
+}

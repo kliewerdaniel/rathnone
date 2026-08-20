@@ -1,0 +1,12 @@
+{
+  "artifact_hash": "c70fe75cb4f5c3a266157d1c9f3d906a0524f755d4a5cf5e57e8dabf1a1dba79",
+  "result": {
+    "after_tamper": false,
+    "before": true,
+    "reason": "signature invalid at seq 1"
+  },
+  "scenario": {
+    "expect": "verify_locally() => False",
+    "vector": "mutate a signed ledger entry"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "artifact_hash": "cda439286bf236652590ced8f52dfe6b3606f094c48a293c977861f01098e0cd",
+  "result": {
+    "oks": [
+      true,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "scenario": {
+    "expect": "velocity blocks after cap",
+    "vector": "burst of actions beyond velocity window"
+  }
+}

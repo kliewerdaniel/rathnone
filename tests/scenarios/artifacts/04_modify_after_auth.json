@@ -1,0 +1,13 @@
+{
+  "artifact_hash": "3f8b99d724e2fd2fdf8c8e5890b659797990f13a45412f2e398340385c4c1e73",
+  "result": {
+    "live_sign_persisted": true,
+    "signed_hash": "a766a0071a499b3a9b9e89f60c1a0777ce065c5d172e4b6acdd2054dad6cdf62",
+    "tampered_hash": "66690c28c7a5844fff694c3e69e03fbee4e43bd1b00d06e749fe48307974a047",
+    "verify_tampered": false
+  },
+  "scenario": {
+    "expect": "signed hash == action hash; tampered hash mismatch -> verify fails; live_sign persisted",
+    "vector": "change destination after sign"
+  }
+}

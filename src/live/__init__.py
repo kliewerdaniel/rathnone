@@ -92,6 +92,44 @@ class SettlementAuthRecord:
             ledger_prev=ledger_prev,
         )
 
+    @classmethod
+    def build_for_action(
+        cls,
+        *,
+        action,
+        decision_ref: str,
+        capability: str,
+        verdict: str,
+        signer: Secp256k1Signer,
+        chain: str = "evm_l2",
+        contract_address: str = "",
+        ledger_prev: str = "",
+        approved: bool = False,
+    ) -> "SettlementAuthRecord":
+        """v2: sign over a FinancialAction's action_hash (not a raw intent dict).
+
+        Preserves the same fail-closed rule as build(): requires AUTO, unless an
+        explicit operator approval is supplied (HUMAN + approved). The signature
+        binds the tenant's secp256k1 key to the exact economic action — tampering
+        with the action changes the hash and breaks verify().
+        """
+        if verdict != "AUTO" and not approved:
+            raise ValueError("live settlement requires AUTO verdict (or approval)")
+        ih = action.action_hash
+        digest = bytes.fromhex(ih)
+        sig = signer.sign_eth(digest)
+        return cls(
+            decision_ref=decision_ref,
+            capability=capability,
+            chain=chain,
+            contract_address=contract_address,
+            intent_hash=ih,
+            verdict=verdict,
+            signer_address=signer.address,
+            signature=sig.hex(),
+            ledger_prev=ledger_prev,
+        )
+
     def verify(self, expected_intent: dict) -> bool:
         """Independent verify: re-hash intent, recover signer, check address."""
         if self.verdict != "AUTO" or not self.signature:
@@ -143,6 +181,35 @@ class OrderAuthRecord:
             capability=capability,
             venue=venue,
             order_hash=oh,
+            verdict=verdict,
+            signer_pubkey=_pem_of(signing_key),
+            signature=sig.hex(),
+            ledger_prev=ledger_prev,
+        )
+
+    @classmethod
+    def build_for_action(
+        cls,
+        *,
+        action,
+        decision_ref: str,
+        capability: str,
+        verdict: str,
+        signing_key,  # Ed25519PrivateKey
+        venue: str = "sim://exchange",
+        ledger_prev: str = "",
+        approved: bool = False,
+    ) -> "OrderAuthRecord":
+        """v2: sign over a FinancialAction's action_hash (not a raw order dict)."""
+        if verdict != "AUTO" and not approved:
+            raise ValueError("live order requires AUTO verdict (or approval)")
+        ah = action.action_hash
+        sig = ed25519_sign(signing_key, bytes.fromhex(ah))
+        return cls(
+            decision_ref=decision_ref,
+            capability=capability,
+            venue=venue,
+            order_hash=ah,
             verdict=verdict,
             signer_pubkey=_pem_of(signing_key),
             signature=sig.hex(),

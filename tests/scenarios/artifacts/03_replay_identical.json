@@ -1,0 +1,11 @@
+{
+  "artifact_hash": "f3a660ad695818767571c94ef2d146b5f4d88e92a187a0d07faaf0198c34bfe2",
+  "result": {
+    "first_state": "SETTLED",
+    "first_verdict": "AUTO"
+  },
+  "scenario": {
+    "expect": "replay detected, second blocked",
+    "vector": "resubmit identical action_hash"
+  }
+}

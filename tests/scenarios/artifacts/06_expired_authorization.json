@@ -1,0 +1,10 @@
+{
+  "artifact_hash": "b84ebfee2c087dcf63c9c2dff9b46a41cd27ef2d2a4792f04ea3a4b8cbf20c80",
+  "result": {
+    "replay_error": "action expired (expiry=200 < now=500)"
+  },
+  "scenario": {
+    "expect": "BLOCKED (expired)",
+    "vector": "action submitted after expiry"
+  }
+}

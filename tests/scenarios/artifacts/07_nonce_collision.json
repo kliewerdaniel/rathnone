@@ -1,0 +1,11 @@
+{
+  "artifact_hash": "43775c88c5930126a682423d7cb5c842a6a83f9384519c323ef6c4acc36ce1f1",
+  "result": {
+    "first_ok": true,
+    "second_error": "nonce 7 reused for a different action (prior=1a34c3a495...)"
+  },
+  "scenario": {
+    "expect": "second BLOCKED (nonce reuse)",
+    "vector": "two distinct actions share a nonce"
+  }
+}

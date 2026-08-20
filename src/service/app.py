@@ -22,6 +22,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from ..finance.proposal import RathnoneFinanceProposal
+from ..finance.action import FinancialAction, action_from_intent, action_from_order
+from ..config import TenantLimits
+from ..risk.engine import RiskEngine, RiskState
+from ..security.operator import OperatorAuthority, ApprovalRecord, load_operator_public_key
+from ..security import replay as _replay
+from ..evidence.chain import EvidenceGraph
+from ..service.pipeline import AuthorizationPipeline
 from ..finance.adapters import (
     execute_trade_execute, execute_treasury_rebalance, execute_chain_settle,
     ExecutionRefused,
@@ -55,6 +62,13 @@ _breaker = CircuitBreaker(clock=_clock)
 _MAX_VALUE_WEI = max_settlement_value_wei()          # None = no ceiling (set in prod)
 _velocity = VelocityGuard(clock=_clock,
                           max_per_window=live_signing_rate_max_per_window())
+
+# v2 control-plane state (per-process singletons; deterministic authority layer).
+_operator = OperatorAuthority()          # operator's Ed25519 approval key
+_replay_registry = _replay.ActionRegistry()   # replay / nonce / cross-tenant
+_evidence = EvidenceGraph()             # causal evidence graph (queryable view)
+_risk_engine = RiskEngine()              # deterministic, narrowing-only
+_limits = TenantLimits.from_env()        # env-sourced risk bounds
 
 
 @dataclass
@@ -289,6 +303,96 @@ def execute_live(tenant_id: str, body: _ExecuteLiveIn):
     })
     return {"decision": asdict(decision), "live_record": record,
             "ledger_entry": ledger_entry, "verify": t.verify_locally()[0]}
+
+
+class _AuthorizeActionIn(BaseModel):
+    """A proposed FinancialAction (v2 control-plane input)."""
+    action: dict
+    # Optional signed operator approval (HUMAN workflow). Must bind to action_hash.
+    approval: Optional[dict] = None
+    require_human_approval: bool = False
+    denylist: tuple = ()
+
+
+@app.post("/tenants/{tenant_id}/authorize_action")
+def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
+    """v2 control-plane endpoint: run the FULL pipeline over a FinancialAction.
+
+    Order: epistemic (frozen spine) -> policy -> risk (narrowing) -> HUMAN
+    approval (if required) -> replay/isolation -> settlement gate -> signer ->
+    state machine -> venue -> reconciliation -> evidence ledger.
+
+    The operator approval (if supplied) MUST bind to the action's exact hash, or
+    the request is refused (closes the "approve-one-execute-another" gap). Returns
+    a machine-readable PipelineResult incl. the causal evidence events.
+    """
+    t = _get_tenant(tenant_id)
+    try:
+        action = FinancialAction(**body.action)
+    except TypeError as e:
+        raise HTTPException(status_code=400, detail=f"invalid action: {e}")
+    action.tenant_id = tenant_id  # tenant-scoped; never trust caller's tenant
+
+    approval = None
+    if body.approval:
+        try:
+            approval = ApprovalRecord(**body.approval)
+            approval.verify(_operator.public_key)
+        except Exception:
+            raise HTTPException(
+                status_code=403,
+                detail="supplied approval signature invalid or does not verify")
+
+    # circuit breaker (independent operator halt)
+    if _breaker.is_open:
+        raise HTTPException(
+            status_code=503,
+            detail="live signing halted: circuit breaker open (operator control)")
+
+    pipe = AuthorizationPipeline(
+        t, operator=_operator, registry=_replay_registry, evidence=_evidence,
+        limits=_limits, risk_engine=_risk_engine, breaker=_breaker,
+        velocity=_velocity, clock_now=_clock._t)
+    result = pipe.run(
+        action, approval=approval,
+        require_human_approval=body.require_human_approval,
+        denylist=tuple(body.denylist))
+
+    # Map final blocked/refused outcomes to HTTP 403/503.
+    if result.blocked_reason:
+        code = 503 if "breaker" in result.blocked_reason else 403
+        raise HTTPException(status_code=code, detail=result.blocked_reason)
+
+    return {
+        "action_id": result.action_id,
+        "action_hash": result.action_hash,
+        "verdict": result.verdict,
+        "risk_ok": result.risk_ok,
+        "risk_violations": result.risk_violations,
+        "approval_bound": result.approval_bound,
+        "replay_ok": result.replay_ok,
+        "state": result.state.value,
+        "venue_state": result.venue_state,
+        "reconciliation": result.reconciliation,
+        "reconciliation_detail": result.reconciliation_detail,
+        "live_record": result.live_record,
+        "verify": t.verify_locally()[0],
+    }
+
+
+@app.get("/tenants/{tenant_id}/evidence/{action_id}")
+def evidence_trace(tenant_id: str, action_id: str):
+    """Return the causal evidence chain for one action (the Authorization Trace)."""
+    _get_tenant(tenant_id)
+    chain = _evidence.trace(action_id)
+    return {
+        "action_id": action_id,
+        "events": [c.__dict__ for c in chain],
+        "current_state": (_evidence.current_state(action_id).value
+                          if _evidence.current_state(action_id) else None),
+        "transition_violations": _evidence.validate_transitions(action_id),
+        "chain_integrity_ok": _evidence.verify_chain_integrity(),
+    }
 
 
 @app.get("/tenants/{tenant_id}/audit")

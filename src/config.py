@@ -11,6 +11,7 @@ Convention: prefixed RATHNONE_* so they don't collide with host env.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -68,6 +69,133 @@ def live_signing_rate_max_per_window() -> int:
     return val
 
 
+# ---------------------------------------------------------------------------
+# v2 Risk-engine limits (fail-closed env knobs)
+# ---------------------------------------------------------------------------
+# Each reader falls back to a SAFE DEFAULT when unset, but RAISES on malformed
+# input (never silently disabling the guard). A deployment that wants real
+# protection sets these per its risk appetite. None means "no bound" for
+# max_* (operator must set), but velocity/concentration defaults are concrete
+# safe values.
+
+def _int_env(name: str, default: int) -> int:
+    raw = _getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        val = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer, got {raw!r}")
+    return val
+
+
+def risk_max_order_notional() -> Optional[float]:
+    """RATHNONE_RISK_MAX_ORDER_NOTIONAL: max single-order notional (USD).
+    None = no bound (operator must set)."""
+    raw = _getenv("RATHNONE_RISK_MAX_ORDER_NOTIONAL")
+    if raw is None or raw == "":
+        return None
+    try:
+        val = float(raw)
+    except ValueError:
+        raise ValueError(f"RATHNONE_RISK_MAX_ORDER_NOTIONAL must be a number, got {raw!r}")
+    if val < 0:
+        raise ValueError(f"RATHNONE_RISK_MAX_ORDER_NOTIONAL must be >= 0, got {val}")
+    return val
+
+
+def risk_max_position_size() -> Optional[float]:
+    """RATHNONE_RISK_MAX_POSITION: max position size (USD). None = no bound."""
+    raw = _getenv("RATHNONE_RISK_MAX_POSITION")
+    if raw is None or raw == "":
+        return None
+    try:
+        val = float(raw)
+    except ValueError:
+        raise ValueError(f"RATHNONE_RISK_MAX_POSITION must be a number, got {raw!r}")
+    if val < 0:
+        raise ValueError(f"RATHNONE_RISK_MAX_POSITION must be >= 0, got {val}")
+    return val
+
+
+def risk_max_daily_loss() -> Optional[float]:
+    """RATHNONE_RISK_MAX_DAILY_LOSS: max realized+unrealized daily loss (USD)."""
+    raw = _getenv("RATHNONE_RISK_MAX_DAILY_LOSS")
+    if raw is None or raw == "":
+        return None
+    try:
+        val = float(raw)
+    except ValueError:
+        raise ValueError(f"RATHNONE_RISK_MAX_DAILY_LOSS must be a number, got {raw!r}")
+    if val < 0:
+        raise ValueError(f"RATHNONE_RISK_MAX_DAILY_LOSS must be >= 0, got {val}")
+    return val
+
+
+def risk_max_portfolio_exposure() -> Optional[float]:
+    """RATHNONE_RISK_MAX_EXPOSURE: max gross portfolio exposure (USD)."""
+    raw = _getenv("RATHNONE_RISK_MAX_EXPOSURE")
+    if raw is None or raw == "":
+        return None
+    try:
+        val = float(raw)
+    except ValueError:
+        raise ValueError(f"RATHNONE_RISK_MAX_EXPOSURE must be a number, got {raw!r}")
+    if val < 0:
+        raise ValueError(f"RATHNONE_RISK_MAX_EXPOSURE must be >= 0, got {val}")
+    return val
+
+
+def risk_concentration_limit() -> float:
+    """RATHNONE_RISK_CONCENTRATION: max fraction (0..1) of AUM in one instrument.
+    Default 0.5 (50%)."""
+    return _int_env("RATHNONE_RISK_CONCENTRATION", 50) / 100.0
+
+
+def risk_velocity_max_per_window() -> int:
+    """RATHNONE_RISK_VELOCITY: max executable actions per sliding window.
+    Default 1000 (safe; tighten per deployment)."""
+    return _int_env("RATHNONE_RISK_VELOCITY", 1000)
+
+
+@dataclass
+class TenantLimits:
+    """Per-tenant risk bounds. Sourced from env by default; may be overridden
+    per tenant (e.g. tighter for a small AUM). None = no bound for max_*."""
+    max_order_notional: Optional[float] = None
+    max_position_size: Optional[float] = None
+    max_daily_loss: Optional[float] = None
+    max_portfolio_exposure: Optional[float] = None
+    concentration_limit: float = 0.5
+    velocity_max_per_window: int = 1000
+
+    @classmethod
+    def from_env(cls) -> "TenantLimits":
+        return cls(
+            max_order_notional=risk_max_order_notional(),
+            max_position_size=risk_max_position_size(),
+            max_daily_loss=risk_max_daily_loss(),
+            max_portfolio_exposure=risk_max_portfolio_exposure(),
+            concentration_limit=risk_concentration_limit(),
+            velocity_max_per_window=risk_velocity_max_per_window(),
+        )
+
+    def with_overrides(self, **overrides) -> "TenantLimits":
+        cur = dict(
+            max_order_notional=self.max_order_notional,
+            max_position_size=self.max_position_size,
+            max_daily_loss=self.max_daily_loss,
+            max_portfolio_exposure=self.max_portfolio_exposure,
+            concentration_limit=self.concentration_limit,
+            velocity_max_per_window=self.velocity_max_per_window,
+        )
+        cur.update(overrides)
+        return TenantLimits(**cur)
+
+
 __all__ = [
     "max_settlement_value_wei", "live_signing_rate_max_per_window",
+    "risk_max_order_notional", "risk_max_position_size", "risk_max_daily_loss",
+    "risk_max_portfolio_exposure", "risk_concentration_limit",
+    "risk_velocity_max_per_window", "TenantLimits",
 ]

@@ -1,0 +1,10 @@
+{
+  "artifact_hash": "4164df33bef8bf1480e4fa60346f40f634869f4adfa0accb058ce2a533c27029",
+  "result": {
+    "blocked": "circuit breaker open"
+  },
+  "scenario": {
+    "expect": "BLOCKED (independent halt)",
+    "vector": "operator trips breaker mid-execution"
+  }
+}
