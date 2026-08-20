@@ -2,9 +2,16 @@
 #
 # Brings up the fail-closed gateway with REAL protective bounds. Override any
 # value with a local .env file (copy from .env.example) or export it first.
+#
+# platform: linux/amd64 is required on Apple Silicon — the arm64 cryptography
+# wheel SIGILLs inside the Docker VM; the amd64 image under Rosetta is stable.
 services:
   rathnone:
-    build: .
+    build:
+      context: .
+      platforms:
+        - linux/amd64
+    platform: linux/amd64
     # Bind to localhost by default; put an auth proxy in front if exposed.
     ports:
       - "127.0.0.1:8765:8765"

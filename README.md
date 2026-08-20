@@ -70,29 +70,25 @@ re-copying `fleet`/`exchange`/`scripts` and updating `PINNED_COMMIT`.
 The image bakes the frozen spine in at build time (no runtime fetch from a
 mutable repo). It runs as a non-root user and ships a `/safety` healthcheck.
 
+> **Build/run platform — IMPORTANT.** On Apple Silicon, build and run the
+> image as **`linux/amd64`** (runs under Rosetta):
+> ```bash
+> docker build --platform=linux/amd64 -t rathnone:local .
+> docker run   --platform=linux/amd64 -d --name rathnone \
+>   -p 127.0.0.1:8765:8765 \
+>   -e RATHNONE_MAX_SETTLEMENT_VALUE_WEI=500000000000000000 \
+>   -e RATHNONE_LIVE_RATE_MAX=100 \
+>   rathnone:local
+> ```
+> Why: the arm64 `cryptography` wheel SIGILLs (exit 132) inside the Docker VM's
+> arm64 emulation during ed25519 native init. The amd64 image is stable and
+> verified end-to-end (healthcheck, live signing, operator halt).
+
 ```bash
-# Build
-docker build -t rathnone:local .
-
-# Run with REAL protective bounds (compose sets safe defaults too)
-docker run -d --name rathnone \
-  -p 127.0.0.1:8765:8765 \
-  -e RATHNONE_MAX_SETTLEMENT_VALUE_WEI=500000000000000000 \
-  -e RATHNONE_LIVE_RATE_MAX=100 \
-  rathnone:local
-
-# Or with compose (loads .env if present):
+# Or with compose (loads .env if present; platform set in the file):
 cp .env.example .env     # edit to taste
 docker compose up -d
 ```
-
-> **Apple-Silicon Docker note:** on some Apple-Silicon Docker VMs, the uvicorn
-> startup can hit an *intermittent* `SIGILL` (exit 132) in the ASGI server's
-> native wheels — a VM/CPU-emulation flake, **not** a Rathnone code defect. The
-> image builds clean and all imports resolve. If you hit it: retry the run, or
-> set `--platform linux/amd64` only if you must, or run the Python path above.
-> The frozen-spine logic and all fail-closed guards are verified by the pytest
-> suite regardless of the server flake.
 
 ---
 

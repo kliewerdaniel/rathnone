@@ -4,7 +4,14 @@
 # vendor/fleet_spine/PINNED_COMMIT) is vendored into the image at build time,
 # so the runtime NEVER reaches out to a mutable external repo. sovereign-agent-fleet
 # stays untouched; this is a read-only snapshot baked into the image.
-FROM python:3.14-slim
+#
+# BUILD/RUN PLATFORM: build and run with `--platform linux/amd64`. On Apple
+# Silicon, the arm64 `cryptography` wheel hits a SIGILL (exit 132) inside the
+# Docker VM's arm64 emulation during ed25519 native init. Running the amd64
+# image under Rosetta is stable (verified). So:
+#   docker build --platform=linux/amd64 -t rathnone:local .
+#   docker run   --platform=linux/amd64 -p 127.0.0.1:8765:8765 ... rathnone:local
+FROM --platform=linux/amd64 python:3.14-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
