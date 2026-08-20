@@ -45,6 +45,7 @@ export const api = {
     req(`/tenants/${tid}/authorize`, { method: "POST", body: JSON.stringify(body) }),
   audit: (tid: string) => req(`/tenants/${tid}/audit`),
   meter: (tid: string) => req(`/tenants/${tid}/meter`),
+  reconciliation: (tid: string) => req(`/tenants/${tid}/reconciliation`),
   evidence: (tid: string, actionId: string) =>
     req(`/tenants/${tid}/evidence/${actionId}`),
   executeLive: (tid: string, body: object) =>

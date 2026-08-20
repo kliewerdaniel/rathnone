@@ -200,5 +200,52 @@ class ReconciliationEngine:
 __all__ = [
     "VenueAdapter", "SimulatedVenue", "VenueState", "VenueReport",
     "InternalState", "ReconciliationEngine", "ReconciliationEvent",
-    "ReconciliationCode",
+    "ReconciliationCode", "summarize_reconciliation",
 ]
+
+
+def summarize_reconciliation(records: list[dict]) -> dict:
+    """Aggregate cross-action reconciliation from durable v2_pipeline records.
+
+    Fail-closed: reads ONLY the per-action ``reconciliation`` code already
+    committed to the tenant ledger. It does not re-run the venue, invent state,
+    or assume anything about actions it has never seen. Returns a stable summary
+    the operator console can render: counts per code, the list of divergences
+    (each referencing the action it concerns), and an overall ``all_matched``
+    flag. If a record's code is present but unrecognized, it is treated as a
+    divergence rather than silently dropped (fail-closed).
+    """
+    total = 0
+    per_code: dict[str, int] = {}
+    matches = 0
+    divergences: list[dict] = []
+
+    for rec in records:
+        if rec.get("event") != "v2_pipeline":
+            continue
+        code = rec.get("reconciliation")
+        if code is None:
+            continue  # not a pipeline action (e.g. legacy authorization event)
+        total += 1
+        per_code[code] = per_code.get(code, 0) + 1
+        if code == ReconciliationCode.MATCH.value:
+            matches += 1
+            continue
+        # Non-match: recognized codes (real divergences) AND unrecognized codes
+        # (fail-closed: never silently drop) both become divergences.
+        divergences.append({
+            "action_id": rec.get("action_id"),
+            "capability": rec.get("capability"),
+            "code": code,
+            "detail": rec.get("reconciliation_detail") or "",
+            "venue_state": rec.get("venue_state"),
+        })
+
+    return {
+        "total_actions": total,
+        "matched": matches,
+        "divergences": divergences,
+        "divergence_count": len(divergences),
+        "per_code": per_code,
+        "all_matched": total > 0 and matches == total,
+    }

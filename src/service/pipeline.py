@@ -295,6 +295,7 @@ class AuthorizationPipeline:
             "replay_ok": res.replay_ok,
             "venue_state": res.venue_state,
             "reconciliation": res.reconciliation,
+            "reconciliation_detail": res.reconciliation_detail,
             "live_signature": (live_record or {}).get("signature"),
             "intent_hash": ah,
         })

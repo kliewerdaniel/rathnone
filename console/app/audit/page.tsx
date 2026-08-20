@@ -88,6 +88,9 @@ function AuditInner() {
                   view authorization trace →
                 </a>
               )}
+              <a className="muted" href={`/reconcile?t=${encodeURIComponent(tid)}`} style={{ marginLeft: 12 }}>
+                cross-action reconcile →
+              </a>
             </div>
           ))}
         </div>

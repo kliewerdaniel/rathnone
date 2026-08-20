@@ -29,6 +29,7 @@ from ..security.operator import OperatorAuthority, ApprovalRecord, load_operator
 from ..security import replay as _replay
 from ..evidence.chain import EvidenceGraph
 from ..service.pipeline import AuthorizationPipeline
+from ..venue.adapter import summarize_reconciliation
 from ..finance.adapters import (
     execute_trade_execute, execute_treasury_rebalance, execute_chain_settle,
     ExecutionRefused,
@@ -407,6 +408,19 @@ def audit(tenant_id: str):
 def meter(tenant_id: str):
     t = _get_tenant(tenant_id)
     return _meter_for(tenant_id, t).summary()
+
+
+@app.get("/tenants/{tenant_id}/reconciliation")
+def reconciliation(tenant_id: str):
+    """Cross-action reconciliation view (v2 P2).
+
+    Aggregates the durable per-action reconciliation codes already committed to
+    the tenant ledger — it does NOT re-query the venue. Fail-closed: never
+    invents state, and an unrecognized code is reported as a divergence rather
+    than dropped. Surfaces MATCH count, divergence list, and an all_matched flag.
+    """
+    t = _get_tenant(tenant_id)
+    return {"tenant_id": tenant_id, **summarize_reconciliation(t.audit())}
 
 
 __all__ = ["app", "_registry", "_meters"]
