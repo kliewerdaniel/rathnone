@@ -1,0 +1,690 @@
+"""Sovereign Runtime + fleet worker lifecycle (03.7 / 06 #11 #12 #13 / 13.2).
+
+The Runtime executes a worker task through the deterministic lifecycle and is
+the single place that:
+
+  * enforces checkpointing so an interrupted run resumes instead of half-writing
+    (failure #11 / #13: FINAL only after APPROVAL),
+  * dedupes consequential writes via idempotency keys (failure #12),
+  * holds the encrypted Memory Bank (local-first, D3/D6),
+  * drives the three workers (Researcher / Analyst / Operator) which emit
+    SourcedEvidence / QualifiedIntel / Artifact (12.2 / 12.3 / 12.4).
+
+The probabilistic "brain" is a PLUGGABLE interface (D15/D18): it only proposes
+structured content; the Runtime never lets it make authority, policy, or
+verification decisions. The same test suite validates both the local Gemma
+stub and (in Phase 4) Gemini, because the boundary is identical.
+"""
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional
+
+from fleet.crypto.foundation import SecretVault, canonical_bytes, sha256
+from fleet.layers.armor import (
+    InjectionError,
+    redact_pii,
+    redact_pii_deep,
+    sanitize_tool_result,
+    verify_tool_envelope,
+)
+from fleet.layers.handoff import Handoff, HandoffError
+from fleet.layers.verification import ASSERTED, HALLUCINATION, VERIFIED, stamp
+from fleet.layers.approval import verify_approval
+from fleet.layers.brain import (
+    Brain,
+    StubBrain,
+    assert_no_policy_leak,
+    analyst_instruction,
+    operator_instruction,
+)
+from fleet.layers.incident import (
+    Authorization,
+    Severity,
+    bind_artifact,
+    required_authorization,
+)
+from fleet.simenv.env import ACTIONS, SimEnv
+from fleet.fin.domain import (
+    Disposition,
+    assess,
+    bind_trade,
+    proposal_hash,
+    account_state_hash,
+    required_trade_authorization,
+)
+from fleet.fin.authorization import build_trade_authorization
+from fleet.fin.exchange_sim import ExchangeSim
+
+
+class Lifecycle(str, Enum):
+    REQUEST = "REQUEST"
+    INTENT = "INTENT"
+    PLAN = "PLAN"
+    ACTION = "ACTION"
+    TOOL = "TOOL"
+    OBSERVATION = "OBSERVATION"
+    EVIDENCE = "EVIDENCE"
+    VERIFICATION = "VERIFICATION"
+    ARTIFACT = "ARTIFACT"
+    APPROVAL = "APPROVAL"
+    FINAL = "FINAL"
+    AUDIT = "AUDIT"
+
+
+# Forward-only order; index enforces monotonic progress / resume.
+_ORDER = list(Lifecycle)
+_IDX = {s: i for i, s in enumerate(_ORDER)}
+
+
+class RuntimeError_(Exception):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Memory Bank (encrypted local state)
+# ---------------------------------------------------------------------------
+
+class MemBank:
+    """Encrypted cross-session context (03.3 #3). Local-first; KEK never leaves."""
+
+    def __init__(self, kek: bytes):
+        self._vault = SecretVault(kek)
+        self._records: Dict[str, Any] = {}
+
+    def put(self, name: str, value: str) -> None:
+        self._records[name] = self._vault.seal(name, value)
+
+    def get(self, name: str) -> Optional[str]:
+        rec = self._records.get(name)
+        return self._vault.open(rec) if rec else None
+
+    def sealed(self, name: str) -> Optional[dict]:
+        return self._records.get(name)
+
+
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PublishedAgent:
+    agent_id: str
+    role: str
+    cert: Any
+    key: Any
+
+
+class Runtime:
+    def __init__(self, control_plane, membank: MemBank, brain: Optional[Brain] = None, store=None, now_fn=None):
+        self.cp = control_plane
+        self.mem = membank
+        self.brain = brain or StubBrain()
+        self.store = store
+        self._now = now_fn or time.time
+        self._idempotency: Dict[str, dict] = {}   # action_id -> recorded result
+        self._checkpoints: Dict[str, dict] = {}    # task_id -> last state
+        self._evidence: Dict[str, dict] = {}       # evidence_id -> metadata
+
+    # -- idempotency (failure #12) ---------------------------------------------
+    def idempotent(self, action_id: str, fn: Callable[[], dict]) -> dict:
+        if action_id in self._idempotency:
+            return {**self._idempotency[action_id], "idempotent_replay": True}
+        result = fn()
+        self._idempotency[action_id] = result
+        return result
+
+    # -- checkpointing (failure #11 / #13) -------------------------------------
+    def checkpoint(self, task_id: str, state: str, payload: dict) -> None:
+        self._checkpoints[task_id] = {"state": state, "payload": payload}
+        if self.store is not None:
+            self.store.put("checkpoint", {"id": f"task:{task_id}", "state": state,
+                                          "payload": payload})
+
+    def resume_from(self, task_id: str) -> Optional[dict]:
+        return self._checkpoints.get(task_id)
+
+    # -- evidence ledger (for D16 staleness) -----------------------------------
+    def record_evidence_meta(self, evidence_id: str, collected_at: int) -> None:
+        self._evidence[evidence_id] = {"collected_at": collected_at}
+
+    def evidence_meta(self) -> Dict[str, dict]:
+        return self._evidence
+
+    def log_audit(self, kind: str, **fields) -> None:
+        self.cp.audit.append({"kind": kind, "result": "ok", **fields})
+
+
+# ---------------------------------------------------------------------------
+# Worker: Researcher (gather) -- emits SourcedEvidence (12.2)
+# ---------------------------------------------------------------------------
+
+class Researcher:
+    def __init__(self, agent: PublishedAgent, runtime: Runtime):
+        self.agent = agent
+        self.rt = runtime
+
+    def gather(self, tool_envelope, retrieval_query: str, allowed_fields: List[str]) -> Handoff:
+        """Turn a verified tool result into signed SourcedEvidence.
+
+        Model Armor (D12): verify the signed tool envelope (poisoning defense)
+        and sanitize the result to declared structured fields only (injection
+        defense). Researcher is forbidden from emitting judgement fields (D8) —
+        Handoff.consume enforces this when the Analyst consumes it.
+        """
+        # 1. tool poisoning defense: reject a forged/tampered tool result. A
+        #    tool result is trusted only if signed by a registry-known tool
+        #    identity (the signed envelope is the trust boundary, 12.6).
+        tool_cert = self.rt.cp.registry.get_cert(tool_envelope.tool_id)
+        if tool_cert is None:
+            raise RuntimeError_("tool identity unknown to registry")
+        if not verify_tool_envelope(tool_envelope, tool_cert.pubkey_pem):
+            raise RuntimeError_("tool envelope failed signature verification")
+        raw = json.loads(tool_envelope.output.decode("utf-8"))
+        # 2. prompt injection defense: structured-only projection.
+        try:
+            structured = sanitize_tool_result(raw, allowed_fields)
+        except InjectionError as e:
+            self.rt.log_audit("runtime.injection", who=self.agent.agent_id, detail=str(e))
+            raise
+        # 2b. PII defense at the evidence boundary (M2): a tool returning a raw
+        #     SSN/email in `extract` must be redacted BEFORE it becomes a persisted
+        #     record, not only at the final artifact. Deep-scan + redact the
+        #     structured result; record that a redaction occurred.
+        redacted, n_pii = redact_pii_deep(structured)
+        if n_pii:
+            self.rt.log_audit(
+                "researcher.pii_redacted", who=self.agent.agent_id,
+                n=n_pii, evidence_boundary=True,
+            )
+        structured = redacted
+        now = int(self.rt._now())
+        evidence_id = f"ev_{sha256(json.dumps(structured, sort_keys=True).encode())[:12]}"
+        payload = {
+            "evidence_id": evidence_id,
+            "agent_id": self.agent.agent_id,
+            "citation": structured.get("citation", ""),
+            "extract": structured.get("extract", ""),
+            "source_hash": sha256(tool_envelope.output),
+            "retrieval_prov": {"tool": tool_envelope.tool_id, "ts": now, "query": retrieval_query},
+            "collected_at": now,
+        }
+        self.rt.record_evidence_meta(evidence_id, now)
+        self.rt.log_audit("researcher.emit", who=self.agent.agent_id, evidence_id=evidence_id)
+        return Handoff.make(self.agent.cert, self.agent.key, "SourcedEvidence", payload)
+
+
+# ---------------------------------------------------------------------------
+# Worker: Analyst (judge) -- emits QualifiedIntel (12.3) via D16 gate
+# ---------------------------------------------------------------------------
+
+class Analyst:
+    def __init__(self, agent: PublishedAgent, runtime: Runtime):
+        self.agent = agent
+        self.rt = runtime
+
+    def qualify(self, evidence_handoff: Handoff, predicates: List[dict]) -> Handoff:
+        """Consume Researcher evidence and emit verification-stamped intel."""
+        live = self.rt.cp.registry.discover(self.agent.agent_id)
+        if live is None:
+            raise RuntimeError_("analyst identity not authenticated")
+        # verify + schema-validate the inbound evidence (Model Armor boundary)
+        ev_payload = evidence_handoff.consume(
+            self.rt.cp.registry, known_evidence=set(self.rt.evidence_meta())
+        )
+        intel = {
+            "intel_id": f"iq_{sha256(canonical_bytes(ev_payload))[:12]}",
+            "agent_id": self.agent.agent_id,
+            "target_id": ev_payload.get("agent_id", "target"),
+            "predicates": predicates,
+        }
+        now = int(self.rt._now())
+        stamped = stamp(intel, self.rt.evidence_meta(), now)
+        self.rt.log_audit("analyst.qualify", who=self.agent.agent_id,
+                          intel_id=stamped["intel_id"],
+                          verification=stamped["verification"])
+        return Handoff.make(self.agent.cert, self.agent.key, "QualifiedIntel", stamped)
+
+    def classify_with_brain(self, evidence_handoff: Handoff, claim_type: str = "icp_fit") -> Handoff:
+        """D15: let the probabilistic brain PROPOSE a classification, then
+        enforce it through the same schema + D16 gate. The brain never decides
+        verification -- it only proposes; the predicate still cites real,
+        resolved evidence refs (no hallucination path)."""
+        ev_payload = evidence_handoff.consume(
+            self.rt.cp.registry, known_evidence=set(self.rt.evidence_meta())
+        )
+        instruction = analyst_instruction(ev_payload, claim_type)
+        assert_no_policy_leak(instruction)  # D15: brain sees evidence only
+        proposal = self.rt.brain.propose("analyst", instruction, "analyst_classification")
+        # the predicate must cite the evidence the Analyst actually consumed
+        proposal["evidence_refs"] = [ev_payload.get("evidence_id")]
+        return self.qualify(evidence_handoff, [proposal])
+
+
+# ---------------------------------------------------------------------------
+# Worker: Operator (act) -- consumes intel, prepares artifact, executes
+# ---------------------------------------------------------------------------
+
+class Operator:
+    def __init__(self, agent: PublishedAgent, runtime: Runtime):
+        self.agent = agent
+        self.rt = runtime
+
+    def act(self, intel_handoff: Handoff, artifact_text: str,
+            capability: str, idempotency_key: str,
+            approval: Optional[dict] = None,
+            target_workload: Optional[str] = None,
+            action_name: Optional[str] = None,
+            simenv: Optional["SimEnv"] = None,
+            enrichment: Optional[dict] = None) -> dict:
+        """Consume QualifiedIntel; enforce D16 boundary; execute consequential op.
+
+        D16 boundary: HALLUCINATION intel is BLOCKED; ASSERTED intel requires a
+        signed ApprovalRecord; VERIFIED intel auto-allows (low risk).
+        FINAL only after authority + (for ASSERTED) approval (#13).
+
+        Incident remediation (D26): when ``target_workload`` + ``action_name`` +
+        ``simenv`` are supplied, this is a bounded SimEnv remediation. The
+        action clears FOUR independent gates in order — any one failing blocks
+        execution:
+
+          1. Evidence (D16): HALLUCINATION intel -> blocked.
+          2. Capability (Gateway): cert must permit ``capability`` -> denied w/
+             signed deny event otherwise.
+          3. Policy (incident.required_authorization): VERIFIED x severity x
+             blast_radius x asset_class -> AUTO / HUMAN / BLOCKED.
+          4. Approval (D17): HUMAN decisions require a cryptographically-bound
+             human ApprovalRecord (bound to the exact state transition).
+             AUTO decisions execute without a human.
+
+        Passing one gate NEVER implies another. Evidence that a workload is
+        compromised does not authorize isolating it (act 3).
+        """
+        live = self.rt.cp.registry.discover(self.agent.agent_id)
+        if live is None:
+            raise RuntimeError_("operator identity not authenticated")
+        intel = intel_handoff.consume(
+            self.rt.cp.registry, known_evidence=set(self.rt.evidence_meta())
+        )
+        verification = intel.get("verification")
+        if verification == HALLUCINATION:
+            self.rt.log_audit("operator.blocked", who=self.agent.agent_id,
+                              reason="hallucination-intel")
+            return {"final": False, "blocked": True, "reason": "HALLUCINATION intel rejected"}
+
+        # PII guard (D12): redact before the artifact becomes a record.
+        redacted, n_pii = redact_pii(artifact_text)
+        artifact_hash = sha256(redacted.encode("utf-8"))
+
+        # --- Incident remediation fork (dormant for non-incident callers) ---
+        if target_workload is not None and action_name is not None:
+            return self._act_remediation(
+                live, intel, verification, artifact_hash, n_pii,
+                capability, idempotency_key, approval,
+                target_workload, action_name, simenv, enrichment,
+            )
+
+        if verification == ASSERTED and approval is None:
+            self.rt.log_audit("operator.needs_approval", who=self.agent.agent_id,
+                              intel_id=intel.get("intel_id"))
+            return {"final": False, "needs_approval": True,
+                    "artifact_hash": artifact_hash, "pii_redacted": n_pii}
+
+        # request authority (Gateway) — idempotency key dedupes replays (#12)
+        resp = self.rt.cp.request_authority(live, capability, idempotency_key=idempotency_key)
+        if not resp.granted:
+            return {"final": False, "blocked": True,
+                    "reason": resp.deny_reason or "authority denied"}
+        if resp.require_approval:
+            # D17 (A1/A2 — fail-closed): the human ApprovalRecord must be a
+            # genuine Ed25519 signature that BINDS to this exact action. A
+            # forged, rebound, or reused approval is rejected.
+            human_cert = self.rt.cp.registry.human_cert()
+            if human_cert is None or approval is None:
+                return {"final": False, "needs_approval": True,
+                        "artifact_hash": artifact_hash, "pii_redacted": n_pii}
+            if not verify_approval(approval, human_cert, idempotency_key,
+                                   capability, artifact_hash):
+                self.rt.log_audit("operator.approval.rejected", who=self.agent.agent_id,
+                                  reason="approval signature invalid or mis-bound")
+                return {"final": False, "blocked": True,
+                        "reason": "approval signature invalid or mis-bound",
+                        "pii_redacted": n_pii}
+
+        # FINAL: the consequential write is itself idempotent (#12) — a replay
+        # of the same idempotency key returns the original recorded result
+        # instead of double-executing.
+        def _commit():
+            self.rt.log_audit("operator.final", who=self.agent.agent_id,
+                              capability=capability, artifact_hash=artifact_hash,
+                              verification=verification, pii_redacted=n_pii,
+                              enrichment=enrichment)
+            return {"final": True, "artifact_hash": artifact_hash,
+                    "verification": verification, "pii_redacted": n_pii,
+                    "require_approval": bool(resp.require_approval)}
+        return self.rt.idempotent(idempotency_key, _commit)
+
+    def _act_remediation(self, live, intel, verification, artifact_hash, n_pii,
+                         capability, idempotency_key, approval,
+                         target_workload, action_name, simenv,
+                         enrichment=None) -> dict:
+        """Incident remediation: clears the four independent gates then
+        executes a deterministic SimEnv transition inside the idempotent _commit.
+        """
+        severity = intel.get("severity")
+        if severity is None:
+            # fall back to the (first) predicate's severity if present
+            preds = intel.get("predicates") or []
+            severity = (preds[0].get("severity") if preds else None) or "LOW"
+        auth = required_authorization(
+            verification, Severity(severity), action_name, target_workload
+        )
+
+        # Gate 1 already passed (HALLUCINATION blocked in act()).
+        # Gate 2: Capability (Gateway) — cert must permit this capability.
+        resp = self.rt.cp.request_authority(live, capability, idempotency_key=idempotency_key)
+        if not resp.granted:
+            return {"final": False, "blocked": True, "gate": "capability",
+                    "reason": resp.deny_reason or "capability denied"}
+
+        # Gate 3: Policy decision.
+        if auth == Authorization.BLOCKED:
+            self.rt.log_audit("operator.blocked", who=self.agent.agent_id,
+                              gate="policy", target=target_workload,
+                              action=action_name, reason="policy BLOCKED")
+            return {"final": False, "blocked": True, "gate": "policy",
+                    "authorization": auth.value,
+                    "reason": "policy BLOCKED: action not permitted on this target"}
+
+        # Gate 4: Approval (only when policy says HUMAN).
+        if auth == Authorization.HUMAN:
+            human_cert = self.rt.cp.registry.human_cert()
+            target_state = ACTIONS[action_name][0].value
+            bound_hash = bind_artifact(target_workload, action_name, target_state)
+            if human_cert is None or approval is None:
+                # G3.1 fix (fleet layer): log the held action durably so the
+                # approval queue + D17 decide() can observe it. The generic act()
+                # path already logs operator.needs_approval here; the remediation
+                # fork used to return needs_approval=True WITHOUT this entry, which
+                # left the consequential action invisible to the queue.
+                self.rt.log_audit(
+                    "operator.needs_approval", who=self.agent.agent_id,
+                    intel_id=intel.get("intel_id"),
+                    capability=capability, target=target_workload, action=action_name,
+                    artifact_hash=bound_hash, authorization=auth.value,
+                    idempotency_key=idempotency_key,
+                )
+                return {"final": False, "needs_approval": True,
+                        "authorization": auth.value,
+                        "artifact_hash": bound_hash, "pii_redacted": n_pii}
+            if not verify_approval(approval, human_cert, idempotency_key,
+                                   capability, bound_hash):
+                self.rt.log_audit("operator.approval.rejected", who=self.agent.agent_id,
+                                  gate="approval", target=target_workload,
+                                  reason="approval bound to a different action/state")
+                return {"final": False, "blocked": True, "gate": "approval",
+                        "reason": "approval signature invalid or mis-bound",
+                        "pii_redacted": n_pii}
+
+        # All gates cleared (AUTO or HUMAN-with-valid-approval). Execute the
+        # deterministic SimEnv transition INSIDE the idempotent commit so a
+        # replay returns the recorded result instead of double-transitioning.
+        target_state = ACTIONS[action_name][0].value
+
+        def _commit():
+            prev = simenv.state_of(target_workload) if simenv is not None else None
+            res = simenv.apply(target_workload, action_name) if simenv is not None else None
+            new_state = res.new_state.value if res is not None else target_state
+            self.rt.log_audit(
+                "operator.final", who=self.agent.agent_id,
+                capability=capability, verification=verification,
+                target=target_workload, action=action_name,
+                severity=severity,
+                prev_state=(prev.value if prev is not None else None),
+                new_state=new_state, authorization=auth.value,
+                pii_redacted=n_pii, enrichment=enrichment,
+            )
+            return {"final": True, "authorization": auth.value,
+                    "verification": verification, "pii_redacted": n_pii,
+                    "require_approval": (auth == Authorization.HUMAN),
+                    "target": target_workload, "action": action_name,
+                    "prev_state": (prev.value if prev is not None else None),
+                    "new_state": new_state,
+                    "simenv_ok": bool(res and res.ok) if res is not None else None}
+        return self.rt.idempotent(idempotency_key, _commit)
+
+    def draft_with_brain(self, intel_handoff: Handoff, target: str,
+                         draft_spec: dict) -> str:
+        """D15: brain DRAFTS outreach copy only. The draft is deterministic-
+        validatable (schema) and still PII-redacted before becoming an artifact.
+        The brain never sees intel verification state or policy context."""
+        intel = intel_handoff.consume(
+            self.rt.cp.registry, known_evidence=set(self.rt.evidence_meta())
+        )
+        instruction = operator_instruction(target, draft_spec)
+        assert_no_policy_leak(instruction)  # D15: no policy/approval leakage
+        proposal = self.rt.brain.propose("operator", instruction, "operator_outreach")
+        redacted, _ = redact_pii(proposal.get("body", ""))
+        return redacted
+
+    # -----------------------------------------------------------------------
+    # Financial workload fork (D27): second consequential domain.
+    # Parallel to _act_remediation. Reuses the SAME four-gate governance:
+    #   1. Evidence (D16): intel must be VERIFIED/ASSERTED, not HALLUCINATION.
+    #   2. Capability (Gateway): cert must permit "trade_execute".
+    #   3. Risk-policy: fleet.fin.required_trade_authorization(AUTO/HUMAN/BLOCKED).
+    #   4. Approval (D17): HUMAN disposition needs a cryptographically-bound
+    #      human ApprovalRecord (bound to the exact TA hash).
+    # Then ExchangeSim.apply() re-verifies signature + state-binding + limits
+    # inside its own Layer-3 decision. Passing one gate NEVER implies another.
+    # -----------------------------------------------------------------------
+    def act_trade(self, intel_handoff: Handoff, proposal, account, market,
+                  mandate, exchange_sim: "ExchangeSim",
+                  idempotency_key: str, approval: Optional[dict] = None,
+                  consensus: Optional[str] = None, now: Optional[int] = None,
+                  enrichment: Optional[dict] = None) -> dict:
+        """Consume QualifiedIntel + a financial TradeProposal; enforce the four
+        governance gates; build + sign a TradeAuthorization; execute it inside
+        the idempotent commit through ExchangeSim.
+
+        ``proposal`` is the model output (or deterministic strategy output) — a
+        PROPOSAL only. The Operator never asks the model whether the trade is
+        authorized; the gates below decide that deterministically (M0).
+        """
+        from fleet.fin.domain import (
+            Disposition, assess, bind_trade, proposal_hash, account_state_hash,
+        )
+        from fleet.fin.authorization import build_trade_authorization
+
+        live = self.rt.cp.registry.discover(self.agent.agent_id)
+        if live is None:
+            raise RuntimeError_("operator identity not authenticated")
+        intel = intel_handoff.consume(
+            self.rt.cp.registry, known_evidence=set(self.rt.evidence_meta())
+        )
+        verification = intel.get("verification")
+        now = now if now is not None else int(self.rt._now())
+
+        # Gate 1: Evidence (D16). HALLUCINATION intel -> BLOCKED (fail-closed).
+        if verification == HALLUCINATION:
+            self.rt.log_audit("operator.blocked", who=self.agent.agent_id,
+                              gate="evidence", reason="hallucination-intel")
+            return {"final": False, "blocked": True,
+                    "reason": "HALLUCINATION intel rejected"}
+
+        # Gate 2: Capability (Gateway). Cert must permit "trade_execute".
+        resp = self.rt.cp.request_authority(live, "trade_execute",
+                                            idempotency_key=idempotency_key)
+        if not resp.granted:
+            return {"final": False, "blocked": True, "gate": "capability",
+                    "reason": resp.deny_reason or "capability denied"}
+
+        # Gate 3: Risk-policy (pure fn). Evaluate against the LIVE account so the
+        # logged portfolio_pre_hash reflects exactly what the risk engine saw.
+        portfolio_pre = account.state()
+        portfolio_pre_hash = account_state_hash(account)
+        risk = assess(proposal, account, market, mandate, now)
+        disposition = required_trade_authorization(risk, consensus)
+
+        if disposition is Disposition.BLOCKED:
+            self.rt.log_audit("operator.blocked", who=self.agent.agent_id,
+                              gate="risk-policy", symbol=proposal.symbol,
+                              reason="policy BLOCKED",
+                              risk_reason=risk.reason)
+            return {"final": False, "blocked": True, "gate": "risk-policy",
+                    "authorization": disposition.value, "reason": risk.reason}
+
+        # Gate 4: Approval (only when disposition == HUMAN).
+        ta_approval_id = None
+        if disposition is Disposition.HUMAN:
+            human_cert = self.rt.cp.registry.human_cert()
+            bound_hash = bind_trade(account.account_id, proposal,
+                                    portfolio_pre_hash, market.snapshot_hash,
+                                    risk.risk_assessment_hash)
+            if human_cert is None or approval is None:
+                return {"final": False, "needs_approval": True,
+                        "authorization": disposition.value,
+                        "artifact_hash": bound_hash}
+            if not verify_approval(approval, human_cert, idempotency_key,
+                                   "trade_execute", bound_hash):
+                self.rt.log_audit("operator.approval.rejected",
+                                  who=self.agent.agent_id, gate="approval",
+                                  reason="approval signature invalid or mis-bound")
+                return {"final": False, "blocked": True, "gate": "approval",
+                        "reason": "approval signature invalid or mis-bound"}
+            ta_approval_id = approval.get("approval_id")
+
+        # Build + sign the TradeAuthorization binding the evaluated state.
+        ta = build_trade_authorization(
+            operator_cert=live, operator_key=self.agent.key,
+            strategy_id=proposal.strategy_id, account_id=account.account_id,
+            symbol=proposal.symbol, side=proposal.side, qty=proposal.qty,
+            price_constraint=proposal.price_constraint,
+            proposal_hash=proposal_hash(proposal),
+            portfolio_pre_hash=portfolio_pre_hash,
+            market_hash=market.snapshot_hash,
+            risk_assessment_hash=risk.risk_assessment_hash,
+            policy_id=resp.policy_id, disposition=disposition,
+            approval_id=ta_approval_id, nonce=idempotency_key, ts=now,
+        )
+
+        def _commit():
+            # ExchangeSim owns the final Layer-3 decision (signature, state
+            # binding S1==S2, limits). Only mutate on REFUSE-free apply.
+            res = exchange_sim.apply(ta, live, self.agent.key, now=now)
+            if not res.ok:
+                self.rt.log_audit(
+                    "operator.final.refused", who=self.agent.agent_id,
+                    account_id=account.account_id, symbol=proposal.symbol,
+                    reason=res.refuse_reason,
+                )
+                return {"final": False, "blocked": True, "gate": "environment",
+                        "authorization": disposition.value,
+                        "reason": res.refuse_reason}
+            assert res.receipt is not None, "receipt must exist on successful apply"
+            receipt = res.receipt
+            # Full canonical risk/input logging (D27 §6) for verifier recompute.
+            self.rt.log_audit(
+                "operator.final", who=self.agent.agent_id,
+                capability="trade_execute", verification=verification,
+                account_id=account.account_id, symbol=proposal.symbol,
+                side=proposal.side, qty=proposal.qty,
+                disposition=disposition.value, policy_id=resp.policy_id,
+                portfolio_pre=portfolio_pre,
+                portfolio_pre_hash=portfolio_pre_hash,
+                market=market.state(), market_hash=market.snapshot_hash,
+                mandate=(mandate.__dict__ if hasattr(mandate, "__dict__")
+                          else dict(mandate)),
+                proposal=proposal.state(), proposal_hash=proposal_hash(proposal),
+                risk=risk.state(), risk_assessment_hash=risk.risk_assessment_hash,
+                ta=ta.to_dict(), receipt=receipt.to_dict(),
+                authorization=disposition.value, consensus=consensus,
+                enrichment=enrichment,
+            )
+            return {"final": True, "authorization": disposition.value,
+                    "verification": verification,
+                    "disposition": disposition.value,
+                    "require_approval": (disposition is Disposition.HUMAN),
+                    "receipt": receipt.to_dict()}
+
+        return self.rt.idempotent(idempotency_key, _commit)
+
+    def act_trade_from_brain(self, intel_handoff: Handoff, account, market,
+                             mandate, exchange_sim: "ExchangeSim",
+                             idempotency_key: str,
+                             strategy_id: str = "ai-strategist",
+                             approval: Optional[dict] = None,
+                             consensus: Optional[str] = None,
+                             now: Optional[int] = None,
+                             brain=None,
+                             enrichment: Optional[dict] = None) -> dict:
+        """Model-coupled trade path (D27 'AI strategy demonstrates the protocol').
+
+        The probabilistic brain PROPOSES a trade via ``TradeStrategist`` (schema-
+        enforced at the boundary, D15). That proposal is then fed into the EXACT
+        same ``act_trade`` four-gate pipeline. The model never decides
+        authorization, risk, or policy -- its output is just a ``proposal``
+        argument. A lying/hostile brain therefore cannot produce an executed
+        trade: every Layer refuses it independently (M0).
+
+        ``universe`` for the strategist is taken from ``mandate.allowed_assets``.
+        ``brain`` may be supplied to override the runtime's configured brain
+        (e.g. a demo selecting cooperative vs hostile).
+        """
+        from fleet.fin.domain import Mandate, TradeProposal
+        from fleet.layers.brain import TradeStrategist
+
+        universe = mandate.allowed_assets if isinstance(mandate, Mandate) \
+            else list(getattr(mandate, "allowed_assets", []))
+        strategist = TradeStrategist(self.agent, self.rt, universe, brain=brain)
+        try:
+            proposal = strategist.propose_from_evidence(intel_handoff, strategy_id)
+        except Exception as exc:  # model output malformed -> fail-closed, no trade
+            self.rt.log_audit("operator.blocked", who=self.agent.agent_id,
+                              gate="proposal", reason=f"strategist-failed: {exc}")
+            return {"final": False, "blocked": True, "gate": "proposal",
+                    "reason": f"strategist failed: {exc}"}
+        if not isinstance(proposal, TradeProposal):
+            return {"final": False, "blocked": True, "gate": "proposal",
+                    "reason": "strategist did not return a TradeProposal"}
+        return self.act_trade(intel_handoff, proposal, account, market, mandate,
+                              exchange_sim, idempotency_key, approval=approval,
+                              consensus=consensus, now=now,
+                              enrichment=enrichment)
+
+
+# ---------------------------------------------------------------------------
+# Human approver (D17) -- signs ApprovalRecord
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Approval:
+    approval_id: str
+    agent_id: str
+    action_id: str
+    capability: str
+    artifact_hash: str
+    decision: str
+    reason: str
+    human_id: str
+    human_sig: str
+    ts: int
+
+    @classmethod
+    def sign(cls, human_cert, human_key, agent_id, action_id, capability,
+             artifact_hash, decision, reason, ts) -> "Approval":
+        import secrets
+        body = canonical_bytes({
+            "approval_id": "", "agent_id": agent_id, "action_id": action_id,
+            "capability": capability, "artifact_hash": artifact_hash,
+            "decision": decision, "reason": reason,
+            "human_id": human_cert.agent_id, "ts": ts,
+        })
+        sig = human_key.sign(body).hex()
+        return cls(approval_id=f"ap_{secrets.token_hex(6)}",
+                   agent_id=agent_id, action_id=action_id, capability=capability,
+                   artifact_hash=artifact_hash, decision=decision, reason=reason,
+                   human_id=human_cert.agent_id, human_sig=sig, ts=ts)

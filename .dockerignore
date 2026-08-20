@@ -1,0 +1,17 @@
+# Keep the image lean and avoid leaking dev/secret state.
+.venv
+node_modules
+console/node_modules
+console/.next
+console/out
+.git
+.gitignore
+*.md
+.env
+.env.*
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.DS_Store
+_scan_fleet.py

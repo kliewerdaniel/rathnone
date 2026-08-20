@@ -1,0 +1,25 @@
+# Rathnone gateway — hardened local deployment.
+#
+# Brings up the fail-closed gateway with REAL protective bounds. Override any
+# value with a local .env file (copy from .env.example) or export it first.
+services:
+  rathnone:
+    build: .
+    # Bind to localhost by default; put an auth proxy in front if exposed.
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      # --- protective bounds (fail-closed) ---
+      RATHNONE_MAX_SETTLEMENT_VALUE_WEI: "${RATHNONE_MAX_SETTLEMENT_VALUE_WEI:-500000000000000000}"
+      RATHNONE_LIVE_RATE_MAX: "${RATHNONE_LIVE_RATE_MAX:-100}"
+      RATHNONE_HOST: "0.0.0.0"
+      RATHNONE_PORT: "8765"
+    # Uncomment to load the full set from a .env file:
+    # env_file: .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/safety').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
