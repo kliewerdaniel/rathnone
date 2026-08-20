@@ -1,0 +1,27 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.coverage
+
+# Node / Next.js
+node_modules/
+console/.next/
+console/out/
+
+# Secrets / local config (live keys are in-memory only, never persisted)
+.env
+.env.*
+*.pem
+*.key
+*.keystore
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Misc
+*.log
