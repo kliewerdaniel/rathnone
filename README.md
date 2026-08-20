@@ -46,7 +46,8 @@ All bounds come from the environment (prefixed `RATHNONE_*`). A malformed value
 | `RATHNONE_API_KEY` | Static shared secret (Bearer or `X-API-Key`) checked when `ENFORCE_AUTH=1` | unset | **set it** |
 | `RATHNONE_MAX_SETTLEMENT_VALUE_WEI` | V4: refuse to sign any settlement above this many wei | unset = **no ceiling** | **set it** (e.g. `500000000000000000` = 0.5 ETH) |
 | `RATHNONE_LIVE_RATE_MAX` | V1: max live signatures per sliding window | `10**12` (unlimited) | **set it** (e.g. `100`) |
-| `RATHNONE_HOST` | uvicorn bind host | `0.0.0.0` | keep behind proxy; `127.0.0.1` if console-only |
+| `RATHNONE_LEDGER_DB` | P1: file path for the durable replay/nonce registry (SQLite). Absent => in-memory (process-local, hermetic) | unset = **in-memory** | set a file path (e.g. `/var/lib/rathnone/ledger.db`) so nonce/replay invariants survive restarts |
+| `RATHNONE_L2_RPC_URL` | v2 P2: real L2 RPC endpoint; enables real on-chain broadcast of authorized+live-signed actions | unset = **SimulatedVenue** | supply a real URL + `RATHNONE_L2_CHAIN_ID` |
 | `RATHNONE_PORT` | uvicorn bind port | `8765` | any |
 
 `.env.example` is a hardened starting point. Copy to `.env` and adjust.

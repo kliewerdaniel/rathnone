@@ -25,3 +25,4 @@ console/out/
 
 # Misc
 *.log
+console/tsconfig.tsbuildinfo

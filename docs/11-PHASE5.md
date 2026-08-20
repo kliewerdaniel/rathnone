@@ -28,7 +28,7 @@ trio, see the immutable audit trail, and meter usage.**
 - `src/service/app.py` — FastAPI surface:
   - `POST /tenants` → mint a tenant (returns public key + id)
   - `POST /tenants/{id}/authorize` → run `decide()`, record + meter on AUTO
-  - `POST /tenants/{id}/execute` → fail-closed adapter execution (simulated)
+  - `POST /tenants/{id}/authorize_action` → full v2 pipeline (sign + opt-in live)
   - `GET  /tenants/{id}/audit` → signed ledger + `verify_chain` result
   - `GET  /tenants/{id}/meter` → per-AUM usage summary
 - `console/` — Next.js (App Router) product console: tenant list, authorize

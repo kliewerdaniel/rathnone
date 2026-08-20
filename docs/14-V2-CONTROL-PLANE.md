@@ -143,8 +143,9 @@ Live signer rejects if `approved_action_hash != action_hash` (closes the
 - `tenant_id` mismatch on lookup → BLOCK (cross-tenant confusion, Attack 16)
 
 ### 3.5 Pipeline rewire
-`src/service/app.py` — `execute_live` (and a new `authorize_action`) run the
-ordered pipeline above. Each stage appends a signed ledger event.
+`src/service/app.py` — `authorize_action` runs the ordered pipeline above.
+Each stage appends a signed ledger event. (`/execute_live` was removed in ADR 17;
+`authorize_action` is now the single signing path.)
 
 ### 3.6 Adversarial scenario harness
 `tests/scenarios/` — machine-readable evidence artifacts per attack:

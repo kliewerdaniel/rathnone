@@ -12,6 +12,7 @@ fail-closed: when a guard cannot evaluate, it refuses.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -36,12 +37,28 @@ _ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 
 def assert_no_pii(body: dict) -> None:
-    """V2: reject any ledger body that binds to real-world identity."""
+    """V2: reject any ledger body that binds to real-world identity.
+
+    Recurses into nested dict/list values so an adversary cannot smuggle a
+    PII key inside a sub-object (e.g. ``evidence: {pii: {email: ...}}``).
+    """
     hit = {str(k).lower() for k in body.keys()} & _PII_KEYS
     if hit:
         raise ValueError(
             f"ledger body rejected: identity-binding keys {sorted(hit)} "
             f"violate the pseudonymity invariant (V2 panopticon defense)")
+    for v in body.values():
+        _assert_no_pii_value(v)
+
+
+def _assert_no_pii_value(v) -> None:
+    """Recurse into nested structures looking for identity-binding keys."""
+    if isinstance(v, dict):
+        assert_no_pii(v)
+    elif isinstance(v, (list, tuple, set)):
+        for item in v:
+            _assert_no_pii_value(item)
+    # scalars and other types carry no keyed structure to scan
 
 
 def sanitize_advisory_evidence(evidence: dict) -> dict:
@@ -101,13 +118,33 @@ def validate_order(order: dict) -> None:
 
 @dataclass
 class Clock:
-    """Injectable monotonic clock for staleness / velocity guards (testable)."""
+    """Injectable monotonic clock for staleness / velocity guards (testable).
+
+    Default (manual) mode holds a settable ``_t`` so tests get a deterministic,
+    controllable timeline. With ``monotonic=True`` the clock advances on real
+    wall-clock time (``time.monotonic_ns``) — the production mode so staleness
+    guards actually progress and cannot be frozen by a process that never calls
+    ``advance``. Both modes expose the same ``now()`` surface; the pipeline only
+    ever reads ``now()``.
+    """
+
     _t: int = 0
+    monotonic: bool = False
+    _epoch_ns: int = 0
+
+    def __post_init__(self):
+        if self.monotonic:
+            self._epoch_ns = time.monotonic_ns()
 
     def now(self) -> int:
+        if self.monotonic:
+            # nanoseconds since construction, capped to a 64-bit positive int
+            return min(time.monotonic_ns() - self._epoch_ns, 2**63 - 1)
         return self._t
 
     def advance(self, dt: int = 1) -> None:
+        if self.monotonic:
+            raise ValueError("advance() is unavailable in monotonic mode")
         if dt < 0:
             raise ValueError("clock cannot go backwards")
         self._t += dt

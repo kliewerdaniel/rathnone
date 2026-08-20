@@ -22,8 +22,7 @@ def _reset():
     _meters.clear()
     _evidence._events.clear()
     _evidence._by_action.clear()
-    _replay_registry._by_nonce.clear()
-    _replay_registry._by_hash.clear()
+    _replay_registry.reset()
 
 
 _BASE_ACTION = {

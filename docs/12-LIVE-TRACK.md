@@ -20,7 +20,7 @@ never touches credentials or the network.
   epistemic field reaches `decide()`.
 - **Fail-closed.** Non-AUTO verdict → no signature committed. `intent_hash`
   mismatch (executor tampering) → verifier rejects. Live track not enabled for
-  a tenant → `execute_live` returns 403.
+  a tenant → `authorize_action` refuses to live-sign (no settlement key).
 - **Verification ⟂ Cognition (Invariant 3).** A live settlement signature is
   verified with the tenant's **secp256k1 public key / address only** — the same
   material any Ethereum client holds. The gateway's signing key is never
@@ -54,9 +54,10 @@ never touches credentials or the network.
 ## Service surface (fail-closed)
 - `POST /tenants` — `live: bool` opt-in. Mints a secp256k1 settlement key,
   returns `settlement_address`. Simulated default unchanged.
-- `POST /tenants/{id}/execute_live` — runs the frozen `decide()`; if `AUTO` and
-  live-enabled, commits a real signature; 403 otherwise. Refuses on BLOCKED
-  (e.g. deny-listed capability) and when live is not enabled.
+- `POST /tenants/{id}/authorize_action` — runs the frozen `decide()`; if `AUTO` and
+  live-enabled, commits a real signature over the action hash; 403 otherwise.
+  Refuses on BLOCKED (e.g. deny-listed capability) and when live is not enabled.
+  This is the single signing path (ADR 17 deleted `/execute_live`).
 
 ## Console
 - Mint form: "live track (real signing)" toggle → shows `settlement_address`.

@@ -4,10 +4,29 @@
 
 export const GATEWAY = process.env.NEXT_PUBLIC_GATEWAY || "http://127.0.0.1:8765";
 
+// ADR 17: when the control plane is locked down (RATHNONE_ENFORCE_AUTH=1), the
+// gateway requires a static API key on every gated route. The key is supplied at
+// deploy time (NEXT_PUBLIC_RATHNONE_API_KEY) and sent as a Bearer token. Dev /
+// local-first deployments leave enforcement off and the header is omitted, so the
+// console works unchanged against an open gateway.
+const ENFORCE_AUTH = process.env.NEXT_PUBLIC_RATHNONE_ENFORCE_AUTH === "1";
+const API_KEY = process.env.NEXT_PUBLIC_RATHNONE_API_KEY || "";
+
+function authHeaders(): Record<string, string> {
+  if (ENFORCE_AUTH && API_KEY) {
+    return { Authorization: `Bearer ${API_KEY}` };
+  }
+  return {};
+}
+
 async function req(path: string, init?: RequestInit) {
   const res = await fetch(`${GATEWAY}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+      ...(init?.headers || {}),
+    },
   });
   if (!res.ok) {
     const detail = await res.text();

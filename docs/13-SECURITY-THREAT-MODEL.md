@@ -32,7 +32,7 @@ same property becomes a weapon. The guards below invert the inversion.
   identity-binding keys (`biometric`, `ssn`, `email`, `kyc`, `social_credit`,
   `real_world_id`, …). The ledger is structurally pseudonymous — the panopticon
   escalation cannot be added without defeating this guard. Service layer enforces
-  it on `execute_live` payloads (403).
+  it on `authorize_action` payloads (403).
 
 ### V3 — Algorithmic oligarchy (strength: sovereign autonomy → capital gatekeeping)
 - **Threat:** Gate the gateway by AUM or identity so only an elite qualifies.

@@ -22,11 +22,12 @@ from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 
 from ..finance.proposal import RathnoneFinanceProposal
-from ..finance.action import FinancialAction, action_from_intent, action_from_order
+from ..finance.action import FinancialAction
 from ..config import TenantLimits
 from ..risk.engine import RiskEngine, RiskState
 from ..security.operator import OperatorAuthority, ApprovalRecord
 from ..security import replay as _replay
+from ..security.replay import ActionRegistry, DurableActionRegistry
 from ..evidence.chain import EvidenceGraph
 from ..service.pipeline import AuthorizationPipeline
 from ..venue.adapter import summarize_reconciliation, get_venue
@@ -53,7 +54,7 @@ _meters: dict[str, MeteringLedger] = {}
 # throughput so the live track can never become a high-frequency predation engine
 # (antidote to V1). Both are environment-configurable and fail-closed: a malformed
 # env value raises at import time rather than silently disabling the guard.
-_clock = Clock()
+_clock = Clock(monotonic=True)
 _breaker = CircuitBreaker(clock=_clock)
 # Deployment knobs (fail-closed; see src/config.py):
 #   RATHNONE_MAX_SETTLEMENT_VALUE_WEI  -> refuse transfers above this many wei
@@ -80,7 +81,10 @@ _hygiene = _hyg.CorroborationLayer(enabled=_RATHNONE_HYGIENE_ENABLED)
 
 # v2 control-plane state (per-process singletons; deterministic authority layer).
 _operator = OperatorAuthority()          # operator's Ed25519 approval key
-_replay_registry = _replay.ActionRegistry()   # replay / nonce / cross-tenant
+_replay_registry = (
+    DurableActionRegistry()
+    if os.environ.get("RATHNONE_LEDGER_DB") else ActionRegistry()
+)   # replay / nonce / cross-tenant (durable when RATHNONE_LEDGER_DB is set)
 _evidence = EvidenceGraph()             # causal evidence graph (queryable view)
 _risk_engine = RiskEngine()              # deterministic, narrowing-only
 _limits = TenantLimits.from_env()        # env-sourced risk bounds
@@ -239,7 +243,7 @@ def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
     pipe = AuthorizationPipeline(
         t, operator=_operator, registry=_replay_registry, evidence=_evidence,
         limits=_limits, risk_engine=_risk_engine, hygiene=_hygiene,
-        breaker=_breaker, velocity=_velocity, clock_now=_clock._t,
+        breaker=_breaker, velocity=_velocity, clock_now=_clock.now(),
         max_value_wei=_MAX_VALUE_WEI,
         venue=get_venue(t, rpc_url=_L2_RPC_URL, chain_id=_L2_CHAIN_ID))
     result = pipe.run(

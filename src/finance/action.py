@@ -126,10 +126,23 @@ class FinancialAction:
 
     # --- lifecycle helpers ----------------------------------------------
     def as_intent(self) -> dict:
-        """Project to the legacy settlement-intent shape (for chain_settle)."""
+        """Project to the legacy settlement-intent shape (for chain_settle).
+
+        The settlement gate requires an integer-string wei ``value``. Quantity is
+        carried as a float (broad client compatibility), so we convert through
+        Decimal to avoid binary-float artifacts (e.g. ``1.0 * 1.0 = 0.9999999``
+        must not round the wei value down). The unit-minor (wei) amount is exact
+        integer arithmetic; no float ever reaches the on-chain value string.
+        """
+        from decimal import Decimal
+        if self.settlement_asset.startswith("wei") or self.currency == "wei":
+            # value = floor(quantity * price_limit) in integer wei
+            value = int((Decimal(str(self.quantity)) * Decimal(str(self.price_limit))).to_integral_value(rounding="ROUND_FLOOR"))
+        else:
+            value = str(self.quantity)
         return {
             "to": self.destination,
-            "value": str(int(self.notional_value)) if self.settlement_asset.startswith("wei") or self.currency == "wei" else str(self.quantity),
+            "value": str(value),
             "nonce": self.nonce,
         }
 
