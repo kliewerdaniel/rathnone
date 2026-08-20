@@ -116,3 +116,67 @@ def test_verdict_independent_of_aum():
     v_small = c.post(f"/tenants/{small}/authorize", json=payload).json()["decision"]["verdict"]
     v_whale = c.post(f"/tenants/{whale}/authorize", json=payload).json()["decision"]["verdict"]
     assert v_small == v_whale
+
+
+# --- env-configurable deployment knobs (V1/V4, fail-closed) ----------------
+
+def test_config_max_value_wei_fail_closed():
+    from src.config import (
+        max_settlement_value_wei, live_signing_rate_max_per_window,
+    )
+    # unset / empty -> None (no ceiling)
+    orig = {}
+    for k in ("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", "RATHNONE_LIVE_RATE_MAX"):
+        orig[k] = __import__("os").environ.pop(k, None)
+    try:
+        assert max_settlement_value_wei() is None
+        assert live_signing_rate_max_per_window() == 10**12
+        # explicit valid values
+        __import__("os").environ["RATHNONE_MAX_SETTLEMENT_VALUE_WEI"] = "10"
+        assert max_settlement_value_wei() == 10
+        __import__("os").environ["RATHNONE_LIVE_RATE_MAX"] = "5"
+        assert live_signing_rate_max_per_window() == 5
+        # malformed -> raises (fail-closed, never silently unbounded)
+        __import__("os").environ["RATHNONE_MAX_SETTLEMENT_VALUE_WEI"] = "not-a-number"
+        with pytest.raises(ValueError):
+            max_settlement_value_wei()
+        __import__("os").environ["RATHNONE_MAX_SETTLEMENT_VALUE_WEI"] = "-3"
+        with pytest.raises(ValueError):
+            max_settlement_value_wei()
+    finally:
+        for k, v in orig.items():
+            if v is None:
+                __import__("os").environ.pop(k, None)
+            else:
+                __import__("os").environ[k] = v
+
+
+def test_service_honors_max_value_wei_env():
+    """V4: when RATHNONE_MAX_SETTLEMENT_VALUE_WEI is set, an over-ceiling
+    settlement is refused at the service layer (403), even with an AUTO verdict."""
+    import os, sys, importlib
+    os.environ["RATHNONE_MAX_SETTLEMENT_VALUE_WEI"] = "50"
+    # Force a clean re-import so the env knob is read at import time.
+    for m in list(sys.modules):
+        if m.startswith("src.service"):
+            del sys.modules[m]
+    try:
+        appmod = importlib.import_module("src.service.app")
+        importlib.reload(appmod)
+        appmod._registry._tenants.clear(); appmod._meters.clear()
+        appmod._breaker.resume(); appmod._clock._t = 0
+        c = TestClient(appmod.app)
+        tid = c.post("/tenants", json={"aum": 5_000_000.0, "live": True}).json()["tenant_id"]
+        r = c.post(f"/tenants/{tid}/execute_live", json={
+            "request_id": "x", "capability": "rathnone.chain_settle",
+            "action_descriptor": "settle",
+            "payload": {"to": "0x" + "ab" * 20, "value": "100", "nonce": 1}})
+        assert r.status_code == 403, r.text
+        assert "exceeds" in r.json()["detail"]
+    finally:
+        os.environ.pop("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", None)
+        for m in list(sys.modules):
+            if m.startswith("src.service"):
+                del sys.modules[m]
+        appmod = importlib.import_module("src.service.app")
+        importlib.reload(appmod)

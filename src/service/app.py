@@ -31,6 +31,9 @@ from ..security.guards import (
     assert_no_pii, sanitize_advisory_evidence,
     validate_settlement_intent, validate_order,
 )
+from ..config import (
+    max_settlement_value_wei, live_signing_rate_max_per_window,
+)
 from .tenant import TenantRegistry
 from .metering import MeteringLedger
 
@@ -42,12 +45,16 @@ _meters: dict[str, MeteringLedger] = {}
 # is an independent halt the operator can trip WITHOUT the frozen decide() agreeing
 # (the antidote to the "immutable cage" failure). VelocityGuard caps live-signing
 # throughput so the live track can never become a high-frequency predation engine
-# (antidote to V1). Defaults are permissive for local testing; production should
-# tighten VelocityGuard(min_interval=..., max_per_window=...).
+# (antidote to V1). Both are environment-configurable and fail-closed: a malformed
+# env value raises at import time rather than silently disabling the guard.
 _clock = Clock()
 _breaker = CircuitBreaker(clock=_clock)
-_velocity = VelocityGuard(clock=_clock)
-_MAX_VALUE_WEI = None  # set a deployment ceiling (e.g. 10**24) to refuse ruinous transfers
+# Deployment knobs (fail-closed; see src/config.py):
+#   RATHNONE_MAX_SETTLEMENT_VALUE_WEI  -> refuse transfers above this many wei
+#   RATHNONE_LIVE_RATE_MAX             -> max live signatures per sliding window
+_MAX_VALUE_WEI = max_settlement_value_wei()          # None = no ceiling (set in prod)
+_velocity = VelocityGuard(clock=_clock,
+                          max_per_window=live_signing_rate_max_per_window())
 
 
 @dataclass
@@ -243,6 +250,8 @@ def execute_live(tenant_id: str, body: _ExecuteLiveIn):
         )
     # V4: structural sanity for the thing actually being signed. Even with an
     # AUTO verdict, a structurally impossible / over-ceiling transfer is refused.
+    # The ceiling (_MAX_VALUE_WEI) is env-configurable via
+    # RATHNONE_MAX_SETTLEMENT_VALUE_WEI (None = no ceiling; set in production).
     try:
         if body.capability == "rathnone.chain_settle":
             validate_settlement_intent(body.payload, max_value_wei=_MAX_VALUE_WEI)

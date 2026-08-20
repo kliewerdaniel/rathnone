@@ -57,6 +57,20 @@ same property becomes a weapon. The guards below invert the inversion.
   3. `Clock` is injectable so staleness/velocity are testable; the live runtime
      uses a real monotonic clock.
 
+## Deployment configuration (fail-closed env knobs)
+Both V1/V4 bounds are environment-configurable via `src/config.py`:
+
+- `RATHNONE_MAX_SETTLEMENT_VALUE_WEI` — refuse to sign any settlement transfer
+  above this many wei (integer ≥ 0). Unset = no ceiling (operator must set in
+  production). `"0"` bans all settlements. Malformed value → raises at import
+  time (never silently unbounded).
+- `RATHNONE_LIVE_RATE_MAX` — max live signatures per sliding window (default
+  `10**12`, effectively unlimited for dev). Set strict in production to enforce
+  the velocity guard. Malformed → raises at import.
+
+Example hardened launch:
+`RATHNONE_MAX_SETTLEMENT_VALUE_WEI=1000000000000000000000 RATHNONE_LIVE_RATE_MAX=100 uvicorn src.service.app:app`
+
 ## What is deliberately NOT implemented
 - No predictive/exploitation model in `decide()`.
 - No identity binding; the ledger stays pseudonymous.
