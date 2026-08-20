@@ -83,6 +83,11 @@ function AuditInner() {
               <div className="pre mono">{String(r.intent_hash)}</div>
               <span className="muted">live signature (r||s||v):</span>
               <div className="pre mono">{String(r.live_signature)}</div>
+              {(r.action_id !== undefined && r.action_id !== null) && (
+                <a className="muted" href={`/trace?t=${encodeURIComponent(tid)}&a=${encodeURIComponent(String(r.action_id))}`}>
+                  view authorization trace →
+                </a>
+              )}
             </div>
           ))}
         </div>

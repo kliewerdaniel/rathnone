@@ -79,3 +79,24 @@ td.mono, th.mono { font-family: var(--mono); }
 .check { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
 .check input { min-width: auto; }
 label.check { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
+.small { font-size: 11px; }
+
+/* Authorization trace timeline */
+.trace { margin-top: 8px; display: flex; flex-direction: column; }
+.trace-row { display: flex; gap: 14px; }
+.trace-rail { display: flex; flex-direction: column; align-items: center; width: 14px; flex: 0 0 14px; }
+.dot { width: 11px; height: 11px; border-radius: 50%; background: var(--muted); border: 1px solid var(--border); margin-top: 4px; }
+.dot.PROPOSED { background: #64748b; }
+.dot.AUTHORIZED { background: #38bdf8; }
+.dot.APPROVED { background: #a78bfa; }
+.dot.SIGNED { background: var(--accent); }
+.dot.SUBMITTED { background: #f59e0b; }
+.dot.SETTLED { background: var(--auto); }
+.dot.REJECTED { background: var(--blocked); }
+.dot.FAILED { background: var(--blocked); }
+.dot.ACCEPTED { background: #22c55e; }
+.rail-line { flex: 1 1 auto; width: 2px; background: var(--border); margin: 4px 0; min-height: 22px; }
+.trace-body { flex: 1 1 auto; padding-bottom: 18px; min-width: 0; }
+.trace-head { display: flex; align-items: center; gap: 10px; }
+.trace-layer { font-family: var(--mono); font-size: 12px; color: var(--fg); }
+

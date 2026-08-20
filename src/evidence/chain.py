@@ -29,6 +29,7 @@ from typing import Optional
 class ActionState(str, Enum):
     PROPOSED = "PROPOSED"
     AUTHORIZED = "AUTHORIZED"
+    EVALUATED = "EVALUATED"
     APPROVED = "APPROVED"
     SIGNED = "SIGNED"
     SUBMITTED = "SUBMITTED"
@@ -46,14 +47,17 @@ class ActionState(str, Enum):
 _LEGAL = {
     ActionState.PROPOSED: {ActionState.AUTHORIZED, ActionState.REJECTED,
                           ActionState.EXPIRED, ActionState.CANCELLED},
-    ActionState.AUTHORIZED: {ActionState.APPROVED, ActionState.REJECTED,
-                             ActionState.EXPIRED, ActionState.CANCELLED},
+    ActionState.AUTHORIZED: {ActionState.EVALUATED, ActionState.APPROVED,
+                             ActionState.REJECTED, ActionState.EXPIRED,
+                             ActionState.CANCELLED},
+    ActionState.EVALUATED: {ActionState.APPROVED, ActionState.REJECTED,
+                            ActionState.CANCELLED},
     ActionState.APPROVED: {ActionState.SIGNED, ActionState.REJECTED,
                            ActionState.CANCELLED},
     ActionState.SIGNED: {ActionState.SUBMITTED, ActionState.CANCELLED,
                          ActionState.FAILED},
-    ActionState.SUBMITTED: {ActionState.ACCEPTED, ActionState.FAILED,
-                            ActionState.CANCELLED},
+    ActionState.SUBMITTED: {ActionState.ACCEPTED, ActionState.SETTLED,
+                            ActionState.FAILED, ActionState.CANCELLED},
     ActionState.ACCEPTED: {ActionState.SETTLED, ActionState.FAILED,
                            ActionState.REVERSED, ActionState.DISPUTED},
     ActionState.SETTLED: {ActionState.REVERSED, ActionState.DISPUTED},

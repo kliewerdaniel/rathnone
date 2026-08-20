@@ -85,14 +85,22 @@ class AuthorizationPipeline:
         self._venue = venue or SimulatedVenue()
         self._recon = ReconciliationEngine(self._venue)
         self._now = clock_now
+        self._last_hash = ""      # causal head for the evidence chain
 
     def _emit(self, action: FinancialAction, state: ActionState,
               event_type: str, prev: str, payload: dict) -> EvidenceEvent:
+        # Chain each event to the PREVIOUS event's actual hash (the causal
+        # link), NOT the action's own action_hash. The action_hash (keccak256
+        # of the intent) and the event_hash (sha256 of the event body) are
+        # distinct; binding the chain to the wrong one made every chain after
+        # the root fail verify_chain_integrity. `prev` is accepted for
+        # call-site compatibility but the real link is tracked here.
         ev = EvidenceEvent(
             action_id=action.action_id, tenant_id=action.tenant_id,
             state=state, event_type=event_type, action_hash=action.action_hash,
-            prev_event_hash=prev, payload=payload, timestamp=self._now)
+            prev_event_hash=self._last_hash, payload=payload, timestamp=self._now)
         self._evidence.add(ev)
+        self._last_hash = ev.event_hash
         return ev
 
     def run(self, action: FinancialAction,
@@ -137,7 +145,7 @@ class AuthorizationPipeline:
             input_verdict=verdict)
         res.risk_ok = risk.ok
         res.risk_violations = [v.__dict__ for v in risk.violations]
-        self._emit(action, ActionState.AUTHORIZED, "RISK", ah,
+        self._emit(action, ActionState.EVALUATED, "RISK", ah,
                    {"ok": risk.ok, "violations": res.risk_violations})
         if not risk.ok:
             res.verdict = "BLOCKED"
