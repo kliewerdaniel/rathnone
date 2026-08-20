@@ -26,12 +26,28 @@ from ..finance.adapters import (
     execute_trade_execute, execute_treasury_rebalance, execute_chain_settle,
     ExecutionRefused,
 )
+from ..security.guards import (
+    CircuitBreaker, VelocityGuard, Clock,
+    assert_no_pii, sanitize_advisory_evidence,
+    validate_settlement_intent, validate_order,
+)
 from .tenant import TenantRegistry
 from .metering import MeteringLedger
 
 app = FastAPI(title="Rathnone Gateway", version="0.1.0")
 _registry = TenantRegistry()
 _meters: dict[str, MeteringLedger] = {}
+
+# V4: process-wide safety controls for the autonomous loop. The circuit breaker
+# is an independent halt the operator can trip WITHOUT the frozen decide() agreeing
+# (the antidote to the "immutable cage" failure). VelocityGuard caps live-signing
+# throughput so the live track can never become a high-frequency predation engine
+# (antidote to V1). Defaults are permissive for local testing; production should
+# tighten VelocityGuard(min_interval=..., max_per_window=...).
+_clock = Clock()
+_breaker = CircuitBreaker(clock=_clock)
+_velocity = VelocityGuard(clock=_clock)
+_MAX_VALUE_WEI = None  # set a deployment ceiling (e.g. 10**24) to refuse ruinous transfers
 
 
 @dataclass
@@ -74,6 +90,29 @@ def list_tenants():
     return {"tenant_ids": _registry.ids()}
 
 
+@app.get("/safety")
+def safety_state():
+    """V4: expose the independent circuit-breaker state (operator visibility)."""
+    return {"breaker_open": _breaker.is_open,
+            "live_signing_enabled": not _breaker.is_open}
+
+
+@app.post("/safety/halt")
+def safety_halt():
+    """V4: trip the circuit breaker. Stops live signing/execution immediately,
+    independently of the frozen decide(). This is the antidote to the immutable
+    cage: the operator can always halt the autonomous loop."""
+    _breaker.halt()
+    return {"breaker_open": True}
+
+
+@app.post("/safety/resume")
+def safety_resume():
+    """V4: clear the circuit breaker (operator action only)."""
+    _breaker.resume()
+    return {"breaker_open": False}
+
+
 def _get_tenant(tenant_id: str) -> "object":
     t = _registry.get(tenant_id)
     if t is None:
@@ -84,11 +123,15 @@ def _get_tenant(tenant_id: str) -> "object":
 @app.post("/tenants/{tenant_id}/authorize")
 def authorize(tenant_id: str, body: _AuthorizeIn):
     t = _get_tenant(tenant_id)
+    # V1: advisory_evidence is sanitized before recording. It NEVER reaches
+    # fleet.epistemic.decide() (the translator drops it); this is defense-in-depth
+    # so a future edit cannot smuggle a neutral decision field through.
+    evidence = sanitize_advisory_evidence(body.advisory_evidence or {})
     proposal = RathnoneFinanceProposal(
         producer=body.producer, request_id=body.request_id,
         capability=body.capability, action_descriptor=body.action_descriptor,
         proposal_ref=body.proposal_ref,
-        advisory_evidence=body.advisory_evidence or {},
+        advisory_evidence=evidence,
     )
     decision = t.authorize(
         proposal,
@@ -161,11 +204,30 @@ def execute_live(tenant_id: str, body: _ExecuteLiveIn):
     not AUTO-authorized by the frozen spine.
     """
     t = _get_tenant(tenant_id)
+    # V4: the circuit breaker is an independent halt that does NOT require the
+    # frozen decide() to agree. If tripped, live signing stops outright.
+    if _breaker.is_open:
+        raise HTTPException(
+            status_code=503,
+            detail="live signing halted: circuit breaker open (operator control)",
+        )
     if t.settlement_key is None:
         raise HTTPException(
             status_code=403,
             detail="live track not enabled for tenant (mint with live=true)",
         )
+    # V2: reject any ledger body that would bind the immutable record to
+    # real-world identity (panopticon defense). Checked before signing.
+    try:
+        assert_no_pii(body.payload)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    # V1: cap live-signing throughput so the track cannot become a high-frequency
+    # predation engine. Fail-closed: exceeding the limit refuses.
+    try:
+        _velocity.check()
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
     proposal = RathnoneFinanceProposal(
         producer=body.producer, request_id=body.request_id,
         capability=body.capability, action_descriptor=body.action_descriptor,
@@ -179,6 +241,15 @@ def execute_live(tenant_id: str, body: _ExecuteLiveIn):
             status_code=403,
             detail=f"live signing refused: verdict={decision.verdict}",
         )
+    # V4: structural sanity for the thing actually being signed. Even with an
+    # AUTO verdict, a structurally impossible / over-ceiling transfer is refused.
+    try:
+        if body.capability == "rathnone.chain_settle":
+            validate_settlement_intent(body.payload, max_value_wei=_MAX_VALUE_WEI)
+        elif body.capability == "rathnone.trade_execute":
+            validate_order(body.payload)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=f"intent rejected: {e}")
     try:
         if body.capability == "rathnone.chain_settle":
             record = t.live_settle(

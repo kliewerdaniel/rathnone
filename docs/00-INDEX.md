@@ -21,6 +21,7 @@
 | `10-RATIFIED.md` | Ratified forks F1–F4, B6, B9 (signed off "proceed with all") |
 | `11-PHASE5.md` | Phase 5 design record (tenant isolation B8, per-AUM metering B9) |
 | `12-LIVE-TRACK.md` | Live track: real venue/chain signing adapters (opt-in, fail-closed) |
+| `13-SECURITY-THREAT-MODEL.md` | Security threat model: defenses against 4 red-team inversions (V1–V4) |
 
 ## Planned folder layout (target, not yet created)
 

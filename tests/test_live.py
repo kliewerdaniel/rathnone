@@ -112,15 +112,14 @@ def test_service_live_refused_when_not_enabled():
     assert r.json()["settlement_address"] is None
     r2 = c.post(f"/tenants/{tid}/execute_live", json={
         "request_id": "r1", "capability": "rathnone.chain_settle",
-        "action_descriptor": "settle", "payload": {"to": "0xabc", "value": "1"}})
+        "action_descriptor": "settle", "payload": {"to": "0x" + "ab" * 20, "value": "1"}})
     assert r2.status_code == 403  # live not enabled
 
 
 def test_service_live_settle_signs_when_auto():
     from fastapi.testclient import TestClient
-    from src.service.app import app, _registry, _meters
-    _registry._tenants.clear()
-    _meters.clear()
+    from src.service.app import app, _registry, _meters, _breaker, _clock
+    _registry._tenants.clear(); _meters.clear(); _breaker.resume(); _clock._t = 0
     c = TestClient(app)
     r = c.post("/tenants", json={"aum": 5_000_000.0, "live": True})
     j = r.json()
@@ -129,7 +128,7 @@ def test_service_live_settle_signs_when_auto():
     r2 = c.post(f"/tenants/{tid}/execute_live", json={
         "request_id": "r1", "capability": "rathnone.chain_settle",
         "action_descriptor": "settle",
-        "payload": {"to": "0xabcdef", "value": "1000000000000000000", "nonce": 1}})
+        "payload": {"to": "0x" + "ab" * 20, "value": "1000000000000000000", "nonce": 1}})
     assert r2.status_code == 200, r2.text
     body = r2.json()
     assert body["decision"]["verdict"] == "AUTO"
@@ -154,7 +153,7 @@ def test_service_live_refused_on_blocked():
     r2 = c.post(f"/tenants/{tid}/execute_live", json={
         "request_id": "r1", "capability": "rathnone.chain_settle",
         "action_descriptor": "settle", "denylist": ["rathnone.chain_settle"],
-        "payload": {"to": "0xabc", "value": "1"}})
+        "payload": {"to": "0x" + "ab" * 20, "value": "1"}})
     assert r2.status_code == 403
     assert "verdict=BLOCKED" in r2.json()["detail"]
 
@@ -167,7 +166,7 @@ def test_service_live_signature_lands_in_immutable_ledger():
     c = TestClient(app)
     r = c.post("/tenants", json={"aum": 5_000_000.0, "live": True})
     tid = r.json()["tenant_id"]
-    intent = {"to": "0xAB", "value": "1000000000000000000", "nonce": 1}
+    intent = {"to": "0x" + "AB" * 20, "value": "1000000000000000000", "nonce": 1}
     r2 = c.post(f"/tenants/{tid}/execute_live", json={
         "request_id": "r2", "capability": "rathnone.chain_settle",
         "action_descriptor": "settle", "payload": intent})
