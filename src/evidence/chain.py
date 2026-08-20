@@ -51,7 +51,10 @@ _LEGAL = {
                              ActionState.REJECTED, ActionState.EXPIRED,
                              ActionState.CANCELLED},
     ActionState.EVALUATED: {ActionState.APPROVED, ActionState.REJECTED,
-                            ActionState.CANCELLED},
+                            ActionState.CANCELLED,
+                            # v3: multiple analysis events (hygiene + risk) may
+                            # occur within the evaluated phase before advancing.
+                            ActionState.EVALUATED},
     ActionState.APPROVED: {ActionState.SIGNED, ActionState.REJECTED,
                            ActionState.CANCELLED},
     ActionState.SIGNED: {ActionState.SUBMITTED, ActionState.CANCELLED,

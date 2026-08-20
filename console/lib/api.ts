@@ -24,6 +24,9 @@ export type Decision = {
   scope_ref: string;
   epoch: number;
   reason: string;
+  // v3 epistemic-hygiene gate (present on /authorize_action; optional on v1 path)
+  hygiene_ok?: boolean;
+  hygiene_violations?: { code: string; message: string; detail?: unknown }[];
 };
 
 export type LedgerEntry = Record<string, unknown>;

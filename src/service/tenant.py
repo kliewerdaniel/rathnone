@@ -55,6 +55,7 @@ class Tenant:
     now: int = 100
     aum: float = 0.0
     settlement_key: Optional[Secp256k1Signer] = None
+    settlement_allowlist: set[str] = field(default_factory=set)  # v3 F6: trusted destinations
     _records: list[dict] = field(default_factory=list, repr=False)
     _head: bytes = field(default=GENESIS, repr=False)
 

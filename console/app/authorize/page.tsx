@@ -89,6 +89,7 @@ function AuthorizeInner() {
         {results.length === 0 ? (
           <p className="muted">No decisions yet.</p>
         ) : (
+          <>
           <table>
             <thead>
               <tr><th>capability</th><th>verdict</th><th>ledger</th><th>reason</th></tr>
@@ -104,6 +105,26 @@ function AuthorizeInner() {
               ))}
             </tbody>
           </table>
+          {results.some((r) => typeof r.decision.hygiene_ok === "boolean") && (
+            <div style={{ marginTop: 12 }}>
+              <h3>Epistemic hygiene</h3>
+              {results.filter((r) => typeof r.decision.hygiene_ok === "boolean").map((r, i) => (
+                <div key={i} className="row" style={{ alignItems: "flex-start" }}>
+                  <span className={`badge ${r.decision.hygiene_ok ? "AUTO" : "BLOCKED"}`}>
+                    {r.decision.hygiene_ok ? "corroborated" : "UNCORROBORATED"}
+                  </span>
+                  {r.decision.hygiene_ok ? (
+                    <span className="muted">all economic claims independently corroborated</span>
+                  ) : (
+                    <span className="err">
+                      {(r.decision.hygiene_violations || []).map((v) => v.code).join(", ")}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          </>
         )}
       </div>
 

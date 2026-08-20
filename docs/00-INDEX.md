@@ -2,7 +2,7 @@
 
 **One-line definition:** A Sovereign Finance Gateway — a commercial product that rides the frozen, model-independent `fleet.epistemic.decide()` authorization spine from `sovereign-agent-fleet` to govern consequential finance actions (trade execution, treasury rebalance, on-chain settlement) with cryptographic verifiability and an immutable audit ledger.
 
-**Status:** Implemented & verified. v1 (53 tests) + v2 control plane (16 adversarial) + operator console (safety, trace, reconcile) all shipped and green (75 pytest). Forks F1–F4 ratified. Live track is opt-in, fail-closed.
+**Status:** Implemented & verified. v1 (53 tests) + v2 control plane (16 adversarial) + v3 epistemic-hygiene layer + operator console (safety, trace, reconcile) all shipped and green (98 pytest). Forks F1–F4 + F5–F9 ratified. Live track + hygiene gate are opt-in, fail-closed.
 
 ## Doc map
 
@@ -24,6 +24,7 @@
 | `13-SECURITY-THREAT-MODEL.md` | Security threat model: defenses against 4 red-team inversions (V1–V4) |
 | `14-V2-CONTROL-PLANE.md` | v2 authorization plane: 11-layer pipeline, signed approvals, replay, evidence graph |
 | `15-OPERATOR-CONSOLE.md` | Operator console surface: console→endpoint map, /reconcile, V4 breaker, verification |
+| `16-V3-EPISTEMIC-HYGIENE.md` | v3 IMPLEMENTED: epistemic-hygiene / knowledge-poisoning layer (forks F5–F9 ratified) |
 
 ## Planned folder layout (target, not yet created)
 

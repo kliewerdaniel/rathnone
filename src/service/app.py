@@ -34,6 +34,7 @@ from ..finance.adapters import (
     execute_trade_execute, execute_treasury_rebalance, execute_chain_settle,
     ExecutionRefused,
 )
+from .. import hygiene as _hyg
 from ..security.guards import (
     CircuitBreaker, VelocityGuard, Clock,
     assert_no_pii, sanitize_advisory_evidence,
@@ -71,6 +72,14 @@ _velocity = VelocityGuard(clock=_clock,
 import os
 _L2_RPC_URL = os.environ.get("RATHNONE_L2_RPC_URL", "")
 _L2_CHAIN_ID = int(os.environ.get("RATHNONE_L2_CHAIN_ID", "0") or "0")
+
+# v3 epistemic-hygiene gate (knowledge-poisoning defense). DISABLED by default:
+# the layer is opt-in (mirrors the live track). Set RATHNONE_HYGIENE_ENABLED=1 to
+# turn it on. When enabled it demands independent corroboration for the action's
+# economic claims and fails-closed (BLOCKED) on any uncorroborated claim. Sources
+# (instrument master, price feeds) are configured out-of-band; unset => fail-closed.
+_RATHNONE_HYGIENE_ENABLED = os.environ.get("RATHNONE_HYGIENE_ENABLED", "") == "1"
+_hygiene = _hyg.CorroborationLayer(enabled=_RATHNONE_HYGIENE_ENABLED)
 
 # v2 control-plane state (per-process singletons; deterministic authority layer).
 _operator = OperatorAuthority()          # operator's Ed25519 approval key
@@ -360,8 +369,8 @@ def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
 
     pipe = AuthorizationPipeline(
         t, operator=_operator, registry=_replay_registry, evidence=_evidence,
-        limits=_limits, risk_engine=_risk_engine, breaker=_breaker,
-        velocity=_velocity, clock_now=_clock._t,
+        limits=_limits, risk_engine=_risk_engine, hygiene=_hygiene,
+        breaker=_breaker, velocity=_velocity, clock_now=_clock._t,
         venue=get_venue(t, rpc_url=_L2_RPC_URL, chain_id=_L2_CHAIN_ID))
     result = pipe.run(
         action, approval=approval,
@@ -381,6 +390,8 @@ def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
         "risk_violations": result.risk_violations,
         "approval_bound": result.approval_bound,
         "replay_ok": result.replay_ok,
+        "hygiene_ok": result.hygiene_ok,
+        "hygiene_violations": result.hygiene_violations,
         "state": result.state.value,
         "venue_state": result.venue_state,
         "tx_hash": getattr(result, "tx_hash", None),

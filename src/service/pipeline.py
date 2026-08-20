@@ -7,6 +7,8 @@ as the ONLY epistemic surface, then layers deterministic authority on top.
 Order of layers (each is a hard boundary, in dependency order):
     1. EPISTEMIC   -> tenant.authorize() -> AUTO / HUMAN / BLOCKED  [frozen spine]
     2. POLICY      -> capability allowlist/denylist (already in authorize)
+    2b. HYGIENE    -> CorroborationLayer.evaluate()  [v3 NARROWING ONLY: AUTO->BLOCKED;
+                   knowledge-poisoning gate; opt-in, disabled by default]
     3. RISK        -> RiskEngine.evaluate()  [NARROWING ONLY: AUTO->BLOCKED]
     4. HUMAN       -> if HUMAN: require signed ApprovalRecord(action_hash)
     5. REPLAY/ISO  -> ActionRegistry.register() [nonce/expiry/replay/cross-tenant]
@@ -44,6 +46,7 @@ from ..live import SettlementAuthRecord, OrderAuthRecord
 from ..finance.capabilities import (
     CAP_FIN_TRADE_EXECUTE, CAP_FIN_TREASURY_REBALANCE, CAP_FIN_CHAIN_SETTLE,
 )
+from .. import hygiene as _hyg
 
 
 @dataclass
@@ -56,6 +59,8 @@ class PipelineResult:
     approval_bound: bool = False     # True if a signed approval covered this action
     replay_ok: bool = True
     replay_error: Optional[str] = None
+    hygiene_ok: bool = True          # v3: knowledge-poisoning gate passed
+    hygiene_violations: list = field(default_factory=list)
     live_record: Optional[dict] = None
     state: ActionState = ActionState.PROPOSED
     venue_state: Optional[str] = None
@@ -72,6 +77,7 @@ class AuthorizationPipeline:
                  registry: "_replay.ActionRegistry", evidence: EvidenceGraph,
                  limits: Optional[TenantLimits] = None,
                  risk_engine: Optional[RiskEngine] = None,
+                 hygiene: Optional["_hyg.CorroborationLayer"] = None,
                  breaker: Optional[CircuitBreaker] = None,
                  velocity: Optional[VelocityGuard] = None,
                  venue=None, clock_now: int = 0):
@@ -81,6 +87,7 @@ class AuthorizationPipeline:
         self._evidence = evidence
         self._limits = limits or TenantLimits()
         self._risk = risk_engine or RiskEngine()
+        self._hygiene = hygiene or _hyg.CorroborationLayer()  # opt-in; disabled by default
         self._breaker = breaker
         self._velocity = velocity
         self._venue = venue or SimulatedVenue()
@@ -139,6 +146,26 @@ class AuthorizationPipeline:
         # --- 2. POLICY already enforced by authorize(); advance to AUTHORIZED ---
         self._emit(action, ActionState.AUTHORIZED, "AUTHORIZED",
                    ah, {"capability": action.capability})
+
+        # --- 2b. HYGIENE (v3 knowledge-poisoning gate; narrowing-only) ---
+        # Treats the action's economic content as untrusted claims that must be
+        # independently corroborated. Disabled layers pass through; enabled layers
+        # BLOCK any uncorroborated claim (fail-closed). Never feeds decide().
+        hyg: _hyg.HygieneVerdict = self._hygiene.evaluate(
+            action, allowlist=self._tenant.settlement_allowlist,
+            input_verdict=verdict)
+        res.hygiene_ok = hyg.ok
+        res.hygiene_violations = [v.__dict__ for v in hyg.violations]
+        self._emit(action, ActionState.EVALUATED, "HYGIENE", ah,
+                   {"ok": hyg.ok, "violations": res.hygiene_violations,
+                    "provenance": hyg.provenance})
+        if not hyg.ok:
+            res.verdict = "BLOCKED"
+            res.blocked_reason = "hygiene: " + "; ".join(hyg.reasons)
+            self._emit(action, ActionState.REJECTED, "REJECTION", ah,
+                       {"reason": "hygiene BLOCKED"})
+            res.state = ActionState.REJECTED
+            return res
 
         # --- 3. RISK (narrowing only) ---
         risk: RiskVerdict = self._risk.evaluate(
