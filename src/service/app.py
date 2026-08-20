@@ -44,6 +44,7 @@ from ..config import (
 )
 from .tenant import TenantRegistry
 from .metering import MeteringLedger
+from ..venue.adapter import summarize_reconciliation, get_venue
 
 app = FastAPI(title="Rathnone Gateway", version="0.1.0")
 _registry = TenantRegistry()
@@ -63,6 +64,14 @@ _breaker = CircuitBreaker(clock=_clock)
 _MAX_VALUE_WEI = max_settlement_value_wei()          # None = no ceiling (set in prod)
 _velocity = VelocityGuard(clock=_clock,
                           max_per_window=live_signing_rate_max_per_window())
+
+# Real-venue deployment switch (v2 P2). With no RATHNONE_L2_RPC_URL set (the
+# default), get_venue() returns SimulatedVenue — identical to today, no egress.
+# Set both to broadcast authorized+live-signed actions to a real L2. Never
+# invented here; supply real values at deploy time.
+import os
+_L2_RPC_URL = os.environ.get("RATHNONE_L2_RPC_URL", "")
+_L2_CHAIN_ID = int(os.environ.get("RATHNONE_L2_CHAIN_ID", "0") or "0")
 
 # v2 control-plane state (per-process singletons; deterministic authority layer).
 _operator = OperatorAuthority()          # operator's Ed25519 approval key
@@ -353,7 +362,8 @@ def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
     pipe = AuthorizationPipeline(
         t, operator=_operator, registry=_replay_registry, evidence=_evidence,
         limits=_limits, risk_engine=_risk_engine, breaker=_breaker,
-        velocity=_velocity, clock_now=_clock._t)
+        velocity=_velocity, clock_now=_clock._t,
+        venue=get_venue(t, rpc_url=_L2_RPC_URL, chain_id=_L2_CHAIN_ID))
     result = pipe.run(
         action, approval=approval,
         require_human_approval=body.require_human_approval,

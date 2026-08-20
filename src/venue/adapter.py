@@ -18,15 +18,18 @@ emits reconciliation events for every divergence:
 
 The default ``SimulatedVenue`` is deterministic and can be *adversarially
 perturbed* (wrong destination, partial fill, nonce mismatch, missing tx) — which
-is exactly what powers Attacks 08/09 in the scenario suite. No live network is
-required; wiring a real L2 RPC is a deployment step, not a code-path change.
+is exactly what powers Attacks 08/09 in the scenario suite. A real L2 venue is
+available as a drop-in via ``RealL2Venue`` (``src/venue/l2.py``): it broadcasts
+authorized actions to a real EVM-L2 over JSON-RPC, but only when selected by
+``get_venue()`` (which returns the simulator unless ``RATHNONE_L2_RPC_URL`` is set
+and the tenant is live). No network egress occurs in the default runtime.
 """
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 
 class VenueState(str, Enum):
@@ -200,7 +203,7 @@ class ReconciliationEngine:
 __all__ = [
     "VenueAdapter", "SimulatedVenue", "VenueState", "VenueReport",
     "InternalState", "ReconciliationEngine", "ReconciliationEvent",
-    "ReconciliationCode", "summarize_reconciliation",
+    "ReconciliationCode", "summarize_reconciliation", "get_venue",
 ]
 
 
@@ -249,3 +252,35 @@ def summarize_reconciliation(records: list[dict]) -> dict:
         "per_code": per_code,
         "all_matched": total > 0 and matches == total,
     }
+
+
+def get_venue(tenant: Any | None = None, *, rpc_url: str = "", chain_id: int = 0):
+    """Factory: choose a venue adapter by deployment context (fail-closed).
+
+    Default (no rpc_url, or non-live tenant): ``SimulatedVenue`` — identical to
+    today, no network egress, no credentials. This keeps every existing test and
+    the default runtime unchanged.
+
+    Real venue ONLY when BOTH:
+      - ``rpc_url`` is non-empty (a configured L2 JSON-RPC endpoint), AND
+      - the tenant is live (``tenant.live`` and has a ``settlement_key``).
+
+    If those conditions hold it returns a ``RealL2Venue`` signed with the
+    tenant's own settlement key. Construction failures (bad chain id, missing
+    key) RAISE rather than silently falling back to the simulator — a simulated
+    MATCH for an action never broadcast is the worst possible outcome.
+
+    Credentials are never invented here; ``rpc_url``/``chain_id`` come from the
+    deployment, and the signer is the tenant's real settlement key.
+    """
+    live = bool(getattr(tenant, "live", False)) and getattr(tenant, "settlement_key", None) is not None
+    if not rpc_url or not str(rpc_url).strip() or not live:
+        return SimulatedVenue()
+    # Lazy import: keeps the simulator path free of the real-venue dependency tree.
+    from .l2 import RealL2Venue
+    return RealL2Venue(
+        rpc_url=rpc_url,
+        signer=tenant.settlement_key,
+        chain_id=chain_id or 0,
+        client=None,
+    )

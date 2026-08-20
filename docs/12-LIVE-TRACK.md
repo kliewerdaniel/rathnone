@@ -1,8 +1,9 @@
 # 12 — Live Track: Real Venue/Chain Signing Adapters (opt-in, fail-closed)
 
-**Status:** Built + verified. Deferred by design from Phase 3 (which shipped
-simulated adapters). This document records the design so the build is reviewed
-before any commit.
+**Status:** Built + verified (82 pytest green, incl. the real-venue suite). The
+real L2 venue adapter shipped as `src/venue/l2.py`; default runtime remains the
+simulator. Fail-closed: real broadcast requires `RATHNONE_L2_RPC_URL` + a live
+tenant.
 
 ## Why this exists
 Phase 3 adapters are SIMULATED by default — no real signature, no network. The
@@ -75,10 +76,19 @@ never touches credentials or the network.
   independently recoverable from the stored record.
 
 ## Out of scope (named, not hidden)
-- **Live RPC egress.** No broker/chain RPC is contacted. The signed intent is
-  the artifact a relayer or contract would consume; wiring to a real L2 RPC is
-  a deployment step, not a code-path change. Adapters MUST route every action
-  through the gateway (`decide()` first) — never direct to venue.
+- **Live RPC egress by default.** No broker/chain RPC is contacted in the default
+  runtime. Adapters MUST route every action through the gateway (`decide()`
+  first) — never direct to venue.
+- **Real L2 venue (now implemented as a drop-in).** `src/venue/l2.py` adds
+  `RealL2Venue`, a `VenueAdapter` that broadcasts authorized actions to a real
+  EVM-L2 over JSON-RPC, signing each raw tx with the tenant's OWN settlement key
+  (EIP-155, hand-rolled RLP — no `eth_account` dependency). It is selected by the
+  `get_venue()` factory ONLY when `RATHNONE_L2_RPC_URL` is set AND the tenant is
+  live (has a `settlement_key`). Otherwise `get_venue()` returns `SimulatedVenue`
+  (identical to today — no egress, no credentials). Construction failures RAISE
+  rather than silently falling back to the simulator (a simulated MATCH for an
+  action never broadcast is the worst outcome). No credentials are invented by
+  the code; supply a real RPC url + chain id at deploy time.
 - **Multi-chain.** Settlement record carries `chain` (default `evm_l2`); the
   binding is chain-agnostic in shape, EVM-verifiable in practice.
 
