@@ -26,7 +26,7 @@
 | `15-OPERATOR-CONSOLE.md` | Operator console surface: console→endpoint map, /reconcile, V4 breaker, verification |
 | `16-V3-EPISTEMIC-HYGIENE.md` | v3 IMPLEMENTED: epistemic-hygiene / knowledge-poisoning layer (forks F5–F9 ratified) |
 | `18-OPERATOR-DOWNGRADE.md` | ADR 18 RATIFIED+IMPLEMENTED: signed operator downgrade path for hygiene-BLOCKED (commit 7458803) |
-| `20-OPERATOR-AUTHORIZE-SIGNING.md` | ADR 20 DRAFT: signed operator commands for `authorize_action` (live settlement transport, ops-side tooling) |
+| `20-OPERATOR-AUTHORIZE-SIGNING.md` | ADR 20 RATIFIED+IMPLEMENTED: signed operator commands for `authorize_action` (live settlement transport) |
 
 ## Planned folder layout (target, not yet created)
 

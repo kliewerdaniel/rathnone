@@ -154,19 +154,25 @@ def _meter_for(tenant_id: str, tenant) -> MeteringLedger:
 
 def _require_command(request: "object", *, verb: str, tenant_id: str,
                      body: bytes, tenant) -> None:
-    """ADR 19 gate for a safety-critical verb.
+    """ADR 19/20 gate for a safety- or settlement-critical verb.
 
     The static control-plane key (ADR 17, ``require_api_key``) is coarse transport
-    defense-in-depth; for safety-critical verbs it is no longer *sufficient* once
-    the tenant has an operator allowlist configured. When configured, the command
-    must additionally carry a signed ``OperatorCommand`` binding this exact verb +
-    tenant + body hash + nonce + timestamp to an allowlisted operator key.
+    defense-in-depth; for safety/settlement-critical verbs it is no longer
+    *sufficient* once the operator allowlist is configured. When configured, the
+    command must additionally carry a signed ``OperatorCommand`` binding this exact
+    verb + tenant + body hash + nonce + timestamp to an allowlisted operator key.
 
-    Fail-closed by default: a missing allowlist => the verb is unconfigured and
-    refused (matches the dev-mode posture of ADR 17: nothing silently authorizes).
-    The console never holds signing keys, so a no-op empty command is accepted
-    ONLY when the tenant has no operators configured — i.e. safety verbs stay on
-    the shared-key path until operators are provisioned out-of-band.
+    Applied to:
+      - ``halt`` / ``resume`` (ADR 19) — ``tenant`` is the service-global
+        ``_SAFETY_TENANT`` scope (safety verbs are service-global).
+      - ``authorize`` (ADR 20) — ``tenant`` is the *actual* tenant; the command is
+        verified against that tenant's own ``operator_allowlist`` (settlement
+        authority is a property of the tenant, not the service).
+
+    Fail-closed: a missing allowlist => the signed-command layer is dormant and the
+    ADR 17 static key remains the sole gate. The console never holds signing keys,
+    so the verb stays on the shared-key path until operators are provisioned
+    out-of-band (tenant-scoped for authorize, global for safety verbs).
     """
     allowlist = tenant.operator_allowlist
     if not allowlist:
@@ -211,7 +217,8 @@ def create_tenant(body: _TenantCreate, _: None = Depends(require_api_key)):
         t.enable_live()
     _meter_for(t.tenant_id, t)
     return {"tenant_id": t.tenant_id, "public_key_pem": t.public_key_pem,
-            "aum": t.aum, "settlement_address": t.settlement_address}
+            "aum": t.aum, "settlement_address": t.settlement_address,
+            "operator_gated": bool(t.operator_allowlist)}
 
 
 @app.get("/tenants")
@@ -259,6 +266,18 @@ def _get_tenant(tenant_id: str) -> "object":
     if t is None:
         raise HTTPException(status_code=404, detail="tenant not found")
     return t
+
+
+@app.get("/tenants/{tenant_id}")
+def tenant_info(tenant_id: str, _: None = Depends(require_api_key)):
+    """Non-secret tenant metadata (operator visibility)."""
+    t = _get_tenant(tenant_id)
+    return {
+        "tenant_id": t.tenant_id,
+        "aum": t.aum,
+        "live": t.settlement_key is not None,
+        "operator_gated": bool(t.operator_allowlist),
+    }
 
 
 @app.post("/tenants/{tenant_id}/authorize")
@@ -310,7 +329,7 @@ class _AuthorizeActionIn(BaseModel):
 
 
 @app.post("/tenants/{tenant_id}/authorize_action")
-def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
+def authorize_action(tenant_id: str, body: _AuthorizeActionIn, request: Request):
     """v2 control-plane endpoint: run the FULL pipeline over a FinancialAction.
 
     Order: epistemic (frozen spine) -> policy -> risk (narrowing) -> HUMAN
@@ -322,6 +341,18 @@ def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
     a machine-readable PipelineResult incl. the causal evidence events.
     """
     t = _get_tenant(tenant_id)
+    # ADR 20: for a tenant with an operator allowlist, the live-settlement transport
+    # requires a signed OperatorCommand (verb="authorize") binding this exact request
+    # body. Dormant until the tenant opts into operator authority (allowlist set
+    # out-of-band); non-gated tenants stay on the ADR 17 static-key path. The body
+    # hash binds the full canonical request (action + approval + downgrade + flags),
+    # so a captured command cannot be replayed against a different action/approval.
+    import json as _cmd_json
+    _authorize_body = _cmd_json.dumps(
+        body.model_dump(), sort_keys=True, separators=(",", ":")).encode()
+    _require_command(
+        request, verb="authorize", tenant_id=tenant_id,
+        body=_authorize_body, tenant=t)
     try:
         action = FinancialAction(**body.action)
     except TypeError as e:

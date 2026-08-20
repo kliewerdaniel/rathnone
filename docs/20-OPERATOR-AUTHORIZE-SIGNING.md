@@ -1,6 +1,6 @@
 # ADR 20 — Signed Operator Commands for `authorize_action` (Live Settlement Transport)
 
-**Status:** DRAFT (2026-08-20). For review. Implementation does NOT begin until ratified.
+**Status:** RATIFIED (2026-08-20) + IMPLEMENTED (commit pending).
 
 **Series context:** the control-plane auth architecture has been hardened in three steps —
 - **ADR 17** — static shared API key (`RATHNONE_API_KEY`) as the sole transport gate for every
@@ -154,3 +154,43 @@ shipped, reused as-is); read verbs (static-key-only); the ADR 19 global safety-v
 **This ADR pauses here for review.** On ratify, implementation proceeds: extend `_require_command`
 (authorize verb, tenant allowlist) → ops signing tool → console disable → tests. No code lands
 until you say proceed.
+
+---
+
+## 8. Implementation notes (implemented)
+
+- `src/service/app.py`: `authorize_action` now takes `request: Request` and calls
+  `_require_command(verb="authorize", tenant_id, body=_canonical_body, tenant=t)` right after
+  resolving the tenant. The body hash binds the full canonical `_AuthorizeActionIn`
+  (`json.dumps(body.model_dump(), sort_keys=True, separators=(",",":"))`). The existing
+  `_require_command` already consults `tenant.operator_allowlist` / `_used_command_nonces` /
+  `record_command` generically — so the `authorize` verb reuses the exact ADR 19 machinery with
+  **per-tenant** authority (not the global safety allowlist).
+- `src/service/app.py`: `createTenant` response now includes `operator_gated`; added a read-only
+  `GET /tenants/{tenant_id}` info route (auth-gated) exposing non-secret metadata including
+  `operator_gated`, so the console can detect operator-gated tenants.
+- `scripts/operator_sign.py` (new): ops-side signing tool. Loads an operator Ed25519 key from an
+  out-of-band path, canonicalizes the authorize body identically to the gateway, signs an
+  `OperatorCommand(verb="authorize")`, and POSTs with the `X-Operator-Command` header. Never
+  embedded in the console; key never enters the UI/chat. Supports `--approval` / `--downgrade`
+  JSON passthrough (pre-built, operator-issued) to bind the full request.
+- `console/lib/api.ts` + `console/app/authorize/page.tsx`: added `api.tenantInfo`; the live-
+  settlement button is **disabled** (with a "requires operator signing tool" notice) when the
+  active tenant is operator-gated. No signing in the UI — custody design preserved.
+- `tests/test_operator_authorize_signing.py` (+5): operator-gated tenant refuses no-header
+  `authorize_action` (401); valid signed command settles + is attributed in the audit trail;
+  replayed nonce refused; wrong-body binding refused; non-gated tenant still static-key-only.
+
+## 9. Verification gate (met)
+
+- `pytest -q` → 141 passed (was 136; +5 ADR 20), no regressions.
+- `console npm run build` + `tsc -p tsconfig.json --noEmit` → clean.
+- Manual: with a tenant `operator_allowlist` set, an `authorize_action` lacking the
+  `X-Operator-Command` header is 401; a valid signed command (via `scripts/operator_sign.py`)
+  settles and records an `operator_command` event with the operator pubkey; replaying the nonce
+  is 401.
+
+---
+
+**Ratified and implemented (2026-08-20, "proceed").** Backend + console + ops tool + tests
+landed. Committed and pushed on `origin/main`.

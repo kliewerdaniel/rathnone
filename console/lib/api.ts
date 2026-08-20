@@ -70,6 +70,11 @@ export const api = {
   reconciliation: (tid: string) => req(`/tenants/${tid}/reconciliation`),
   evidence: (tid: string, actionId: string) =>
     req(`/tenants/${tid}/evidence/${actionId}`),
+  // ADR 20: non-secret tenant metadata (operator visibility). The console uses
+  // `operator_gated` to know whether a tenant requires operator-signed transport
+  // — which the console cannot provide (custody design), so the live-settle
+  // control is disabled for such tenants.
+  tenantInfo: (tid: string) => req(`/tenants/${tid}`),
   // v2 control plane: the SINGLE path to authorization + (opt-in) live signing.
   authorizeAction: (tid: string, body: object) =>
     req(`/tenants/${tid}/authorize_action`, { method: "POST", body: JSON.stringify(body) }),

@@ -19,11 +19,25 @@ function AuthorizeInner() {
   const [downgradeResult, setDowngradeResult] = useState<{ verdict: string; downgraded?: boolean; downgrade_violations?: string[] } | null>(null);
   const [results, setResults] = useState<{ decision: Decision; verify: boolean }[]>([]);
   const [err, setErr] = useState<string>("");
+  // ADR 20: a tenant with an operator allowlist requires operator-signed transport
+  // for live settlement — which the console cannot provide (key-custody design).
+  const [operatorGated, setOperatorGated] = useState<boolean>(false);
 
   useEffect(() => {
     const t = params.get("t");
     if (t) setTid(t);
   }, [params]);
+
+  useEffect(() => {
+    if (!tid) return;
+    let cancelled = false;
+    api.tenantInfo(tid)
+      .then((info: { operator_gated?: boolean }) => {
+        if (!cancelled) setOperatorGated(Boolean(info.operator_gated));
+      })
+      .catch(() => { if (!cancelled) setOperatorGated(false); });
+    return () => { cancelled = true; };
+  }, [tid]);
 
   async function run() {
     setErr("");
@@ -177,8 +191,16 @@ function AuthorizeInner() {
             value={livePayload}
             onChange={(e) => setLivePayload(e.target.value)}
           />
-          <button onClick={runLive}>Sign live settlement</button>
+          <button onClick={runLive} disabled={operatorGated} title={operatorGated ? "requires operator signing tool" : undefined}>Sign live settlement</button>
         </div>
+        {operatorGated && (
+          <p className="err" style={{ marginTop: 10 }}>
+            This tenant is <strong>operator-gated</strong>: live settlement requires a signed
+            operator command the console cannot produce (key-custody design). Use the
+            operator signing tool (<code>scripts/operator_sign.py</code>) to submit a
+            signed <code>authorize_action</code>.
+          </p>
+        )}
         {liveResult && (
           <div className="row" style={{ marginTop: 12, flexDirection: "column", alignItems: "flex-start" }}>
             <span className="muted">settlement address:</span>
