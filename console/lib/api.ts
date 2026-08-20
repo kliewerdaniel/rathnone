@@ -73,6 +73,11 @@ export const api = {
   // v2 control plane: the SINGLE path to authorization + (opt-in) live signing.
   authorizeAction: (tid: string, body: object) =>
     req(`/tenants/${tid}/authorize_action`, { method: "POST", body: JSON.stringify(body) }),
+  // ADR 18: operator downgrade of a hygiene-BLOCKED action. `downgrade` is the
+  // signed DowngradeRecord produced by the operator key; it re-enters the action
+  // at the HUMAN band. Mirrors authorizeAction (same endpoint, extra field).
+  authorizeActionDowngrade: (tid: string, body: object) =>
+    req(`/tenants/${tid}/authorize_action`, { method: "POST", body: JSON.stringify(body) }),
   safety: () => req(`/safety`),
   safetyHalt: () => req(`/safety/halt`, { method: "POST" }),
   safetyResume: () => req(`/safety/resume`, { method: "POST" }),

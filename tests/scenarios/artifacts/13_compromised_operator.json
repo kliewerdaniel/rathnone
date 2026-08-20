@@ -1,7 +1,7 @@
 {
-  "artifact_hash": "6f1a377494bc3b1b877a09d397a543c3368850f51c42313036c0000285c2e6b7",
+  "artifact_hash": "76517a2819aad856df0e9123232444ee596319942be8e106b1cb7e68192eb911",
   "result": {
-    "blocked": "HUMAN verdict requires a valid signed operator approval binding this action"
+    "blocked": "HUMAN verdict requires a valid signed operator approval (or downgrade) binding this action"
   },
   "scenario": {
     "expect": "BLOCKED (signature verify fails)",

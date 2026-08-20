@@ -61,6 +61,8 @@ class PipelineResult:
     replay_error: Optional[str] = None
     hygiene_ok: bool = True          # v3: knowledge-poisoning gate passed
     hygiene_violations: list = field(default_factory=list)
+    downgraded: bool = False         # ADR 18: released via signed operator downgrade
+    downgrade_violations: list = field(default_factory=list)
     live_record: Optional[dict] = None
     state: ActionState = ActionState.PROPOSED
     venue_state: Optional[str] = None
@@ -116,7 +118,8 @@ class AuthorizationPipeline:
     def run(self, action: FinancialAction,
             approval: Optional[ApprovalRecord] = None,
             require_human_approval: bool = False,
-            denylist: tuple = ()) -> PipelineResult:
+            denylist: tuple = (),
+            downgrade: Optional["_hyg.DowngradeRecord"] = None) -> PipelineResult:
         tid = action.tenant_id
         ah = action.action_hash
         res = PipelineResult(action_id=action.action_id, action_hash=ah,
@@ -158,10 +161,43 @@ class AuthorizationPipeline:
             input_verdict=verdict)
         res.hygiene_ok = hyg.ok
         res.hygiene_violations = [v.__dict__ for v in hyg.violations]
+
+        # ADR 18: a hygiene-BLOCKED action may be released by a SIGNED operator
+        # downgrade (the only sanctioned widener of a hygiene verdict). The spine
+        # verdict is untouched, so narrowing-only holds; the downgrade re-enters
+        # at the HUMAN band with the released violations recorded in the ledger.
+        downgraded = False
+        if not hyg.ok and downgrade is not None:
+            ok, why = _hyg.validate_downgrade(
+                downgrade, action=action,
+                hygiene_violations=res.hygiene_violations,
+                operator_allowlist=self._tenant.operator_allowlist,
+                used_nonces=self._tenant._used_downgrade_nonces)
+            if ok:
+                downgraded = True
+                self._tenant._used_downgrade_nonces.add(downgrade.nonce)
+                # The downgrade stands in for the human approval: bind it so the
+                # pipeline's existing HUMAN/approval path treats this as approved.
+                if verdict == "AUTO":
+                    verdict = "HUMAN"
+                    res.verdict = "HUMAN"
+                res.hygiene_ok = True
+                res.hygiene_violations = []  # released by signed operator override
+                res.downgraded = True
+                res.downgrade_violations = list(downgrade.violation_ids)
+            else:
+                res.verdict = "BLOCKED"
+                res.blocked_reason = f"hygiene downgrade refused: {why}"
+                self._emit(action, ActionState.REJECTED, "REJECTION", ah,
+                           {"reason": "hygiene downgrade refused", "why": why})
+                res.state = ActionState.REJECTED
+                return res
+
         self._emit(action, ActionState.EVALUATED, "HYGIENE", ah,
                    {"ok": hyg.ok, "violations": res.hygiene_violations,
-                    "provenance": hyg.provenance})
-        if not hyg.ok:
+                    "provenance": hyg.provenance,
+                    "downgraded": downgraded})
+        if not hyg.ok and not downgraded:
             res.verdict = "BLOCKED"
             res.blocked_reason = "hygiene: " + "; ".join(hyg.reasons)
             self._emit(action, ActionState.REJECTED, "REJECTION", ah,
@@ -192,18 +228,30 @@ class AuthorizationPipeline:
             #   - the approval structurally binds to this action_hash, AND
             #   - the operator's Ed25519 signature over the approval is valid.
             # A forged approval (correct hashes, bad sig) is rejected here.
+            # ADR 18: a valid signed downgrade ALSO satisfies the HUMAN gate —
+            # it is itself a signed operator statement over this action_hash.
+            downgrade_ok = (downgraded and downgrade is not None
+                            and downgrade.action_hash == ah)
             good_sig = bool(approval) and approval.verify(self._operator.public_key)
-            if approval is None or not approval.binds_to(ah) or not good_sig:
+            if (approval is None or not approval.binds_to(ah) or not good_sig) \
+                    and not downgrade_ok:
                 res.blocked_reason = ("HUMAN verdict requires a valid signed "
-                                      "operator approval binding this action")
+                                      "operator approval (or downgrade) binding this action")
                 self._emit(action, ActionState.REJECTED, "REJECTION", ah,
                            {"reason": "missing/invalid/forged approval"})
                 res.state = ActionState.REJECTED
                 return res
             res.approval_bound = True
-            self._emit(action, ActionState.APPROVED, "APPROVAL", ah,
-                       {"operator": approval.operator_id,
-                        "signature_verified": good_sig})
+            if downgrade_ok:
+                self._emit(action, ActionState.APPROVED, "APPROVAL", ah,
+                           {"operator": downgrade.operator_id,
+                            "downgrade": True,
+                            "released_violations": downgrade.violation_ids,
+                            "reason": downgrade.reason})
+            else:
+                self._emit(action, ActionState.APPROVED, "APPROVAL", ah,
+                           {"operator": approval.operator_id,
+                            "signature_verified": good_sig})
         else:
             self._emit(action, ActionState.APPROVED, "APPROVAL", ah,
                        {"auto_approved": True})
@@ -322,6 +370,23 @@ class AuthorizationPipeline:
         res.state = settled_state
 
         # --- 10. Ledger append (durable, signed, key-free-verifiable) ---
+        if res.downgraded and downgrade is not None:
+            # ADR 18: immutably record the operator override so an auditor can
+            # replay it key-free from the ledger (Inv 3). The operator pubkeys
+            # are recorded; verification needs only public material.
+            self._tenant.append_ledger({
+                "event": "hygiene_downgrade",
+                "action_id": action.action_id,
+                "action_hash": ah,
+                "released_violations": downgrade.violation_ids,
+                "operator_id": downgrade.operator_id,
+                "operator_pubkey_pem": downgrade.pubkey_pem,
+                "reason": downgrade.reason,
+                "nonce": downgrade.nonce,
+                "second_operator_id": downgrade.second_operator_id,
+                "second_operator_pubkey_pem": downgrade.second_pubkey_pem,
+                "intent_hash": ah,
+            })
         res.ledger_entry = self._tenant.append_ledger({
             "event": "v2_pipeline",
             "action_id": action.action_id,

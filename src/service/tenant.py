@@ -56,6 +56,8 @@ class Tenant:
     aum: float = 0.0
     settlement_key: Optional[Secp256k1Signer] = None
     settlement_allowlist: set[str] = field(default_factory=set)  # v3 F6: trusted destinations
+    operator_allowlist: list[str] = field(default_factory=list)  # ADR 18: operator Ed25519 pubkey PEMs
+    _used_downgrade_nonces: set[int] = field(default_factory=set, repr=False)
     _records: list[dict] = field(default_factory=list, repr=False)
     _head: bytes = field(default=GENESIS, repr=False)
 

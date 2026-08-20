@@ -201,6 +201,10 @@ class _AuthorizeActionIn(BaseModel):
     action: dict
     # Optional signed operator approval (HUMAN workflow). Must bind to action_hash.
     approval: Optional[dict] = None
+    # ADR 18: optional signed operator DOWNGRADE of a hygiene-BLOCKED action.
+    # Must bind to action_hash and release only the violations the action was
+    # actually blocked on; verified against the tenant operator-allowlist.
+    downgrade: Optional[dict] = None
     require_human_approval: bool = False
     denylist: tuple = ()
 
@@ -234,6 +238,22 @@ def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
                 status_code=403,
                 detail="supplied approval signature invalid or does not verify")
 
+    # ADR 18: a signed operator downgrade of a hygiene-BLOCKED action. The
+    # pipeline verifies it against the TENANT's operator-allowlist (not the
+    # gateway's single operator key) — fail-closed if it cannot be verified.
+    downgrade = None
+    if body.downgrade:
+        from src.hygiene import DowngradeRecord
+        try:
+            downgrade = DowngradeRecord(**{
+                k: v for k, v in body.downgrade.items()
+                if k in DowngradeRecord.__dataclass_fields__
+            })
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="invalid downgrade record")
+
     # circuit breaker (independent operator halt)
     if _breaker.is_open:
         raise HTTPException(
@@ -247,7 +267,7 @@ def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
         max_value_wei=_MAX_VALUE_WEI,
         venue=get_venue(t, rpc_url=_L2_RPC_URL, chain_id=_L2_CHAIN_ID))
     result = pipe.run(
-        action, approval=approval,
+        action, approval=approval, downgrade=downgrade,
         require_human_approval=body.require_human_approval,
         denylist=tuple(body.denylist))
 
@@ -266,6 +286,8 @@ def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
         "replay_ok": result.replay_ok,
         "hygiene_ok": result.hygiene_ok,
         "hygiene_violations": result.hygiene_violations,
+        "downgraded": result.downgraded,
+        "downgrade_violations": result.downgrade_violations,
         "state": result.state.value,
         "venue_state": result.venue_state,
         "tx_hash": getattr(result, "tx_hash", None),

@@ -26,8 +26,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ..finance.action import FinancialAction
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from ..finance.action import FinancialAction
+from .downgrade import DowngradeRecord, validate_downgrade
 
 @dataclass
 class HygieneViolation:
@@ -69,6 +72,42 @@ class CorroborationLayer:
         self._feeds = feeds or {}
         self.price_band_bps = price_band_bps
         self.quorum = quorum
+
+    # --- ADR 18: signed operator downgrade of a hygiene-BLOCKED action -------
+    def sign_downgrade(self, action: FinancialAction, *, operator_key: Ed25519PrivateKey,
+                       violation_ids: list[str], reason: str,
+                       second_key: Optional[Ed25519PrivateKey] = None, nonce: int = 0,
+                       timestamp: int = 0, operator_id: str = "rathnone-operator",
+                       second_operator_id: str = "") -> DowngradeRecord:
+        """Produce a SIGNED DowngradeRecord (the ADR 18 safety valve).
+
+        ``operator_key`` is the primary operator's Ed25519 private key; for a
+        2-of-2 violation (DESTINATION_OWNERSHIP family) ``second_key`` must also
+        be supplied. Fail-closed: missing/mismatched key => ValueError.
+        """
+        rec = DowngradeRecord(
+            action_hash=action.action_hash, violation_ids=list(violation_ids),
+            operator_id=operator_id, reason=reason, timestamp=timestamp,
+            nonce=nonce, pubkey_pem=operator_key.public_key().public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            ).decode(),
+        )
+        if rec.requires_second:
+            if second_key is None:
+                raise ValueError(
+                    f"violations {rec.violation_ids} require a 2nd operator signature")
+            # Set the 2nd-operator identity BEFORE signing, so the canonical
+            # bytes the primary signature covers match what verify() replays.
+            rec.second_operator_id = second_operator_id or "rathnone-operator-2"
+            rec.second_pubkey_pem = second_key.public_key().public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            ).decode()
+        rec.sig = operator_key.sign(rec.canonical_bytes()).hex()
+        if rec.requires_second:
+            rec.second_sig = second_key.sign(rec.canonical_bytes()).hex()
+        return rec
 
     def _median(self, xs: list[float]) -> float:
         s = sorted(xs)
@@ -179,4 +218,5 @@ class CorroborationLayer:
                               checks_run=checks, provenance=provenance)
 
 
-__all__ = ["CorroborationLayer", "HygieneVerdict", "HygieneViolation"]
+__all__ = ["CorroborationLayer", "HygieneVerdict", "HygieneViolation",
+           "DowngradeRecord", "validate_downgrade"]

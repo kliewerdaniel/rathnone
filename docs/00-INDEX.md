@@ -25,6 +25,7 @@
 | `14-V2-CONTROL-PLANE.md` | v2 authorization plane: 11-layer pipeline, signed approvals, replay, evidence graph |
 | `15-OPERATOR-CONSOLE.md` | Operator console surface: console→endpoint map, /reconcile, V4 breaker, verification |
 | `16-V3-EPISTEMIC-HYGIENE.md` | v3 IMPLEMENTED: epistemic-hygiene / knowledge-poisoning layer (forks F5–F9 ratified) |
+| `18-OPERATOR-DOWNGRADE.md` | ADR 18 DRAFT: signed operator downgrade path for hygiene-BLOCKED (review, not yet built) |
 
 ## Planned folder layout (target, not yet created)
 

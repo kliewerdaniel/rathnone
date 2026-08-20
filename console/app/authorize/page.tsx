@@ -15,6 +15,8 @@ function AuthorizeInner() {
     '{"to":"0xAB","value":"1000000000000000000","nonce":1}'
   );
   const [liveResult, setLiveResult] = useState<{ sig: string; addr: string } | null>(null);
+  const [downgradePayload, setDowngradePayload] = useState<string>("{}");
+  const [downgradeResult, setDowngradeResult] = useState<{ verdict: string; downgraded?: boolean; downgrade_violations?: string[] } | null>(null);
   const [results, setResults] = useState<{ decision: Decision; verify: boolean }[]>([]);
   const [err, setErr] = useState<string>("");
 
@@ -34,6 +36,26 @@ function AuthorizeInner() {
         require_human_approval: human,
       });
       setResults((prev) => [{ decision: r.decision as Decision, verify: r.verify }, ...prev]);
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  async function runDowngrade() {
+    setErr("");
+    setDowngradeResult(null);
+    try {
+      let payload: any;
+      try {
+        payload = JSON.parse(downgradePayload);
+      } catch {
+        throw new Error("downgrade payload is not valid JSON");
+      }
+      // ADR 18: the SAME authorize_action endpoint, with a signed downgrade
+      // record. The gateway verifies the operator signature(s) and — on success
+      // — re-enters the action at the HUMAN band. Spine-BLOCKED is refused.
+      const r = await api.authorizeActionDowngrade(tid, { action: payload.action, downgrade: payload.downgrade });
+      setDowngradeResult({ verdict: r.verdict, downgraded: r.downgraded, downgrade_violations: r.downgrade_violations });
     } catch (e) {
       setErr(String(e));
     }
@@ -103,40 +125,40 @@ function AuthorizeInner() {
           <p className="muted">No decisions yet.</p>
         ) : (
           <>
-          <table>
-            <thead>
-              <tr><th>capability</th><th>verdict</th><th>ledger</th><th>reason</th></tr>
-            </thead>
-            <tbody>
-              {results.map((r, i) => (
-                <tr key={i}>
-                  <td className="mono">{r.decision.capability.split(".")[1]}</td>
-                  <td><span className={`badge ${r.decision.verdict}`}>{r.decision.verdict}</span></td>
-                  <td className={r.verify ? "ok" : "err"}>{r.verify ? "verified" : "FAIL"}</td>
-                  <td className="muted">{r.decision.reason || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {results.some((r) => typeof r.decision.hygiene_ok === "boolean") && (
-            <div style={{ marginTop: 12 }}>
-              <h3>Epistemic hygiene</h3>
-              {results.filter((r) => typeof r.decision.hygiene_ok === "boolean").map((r, i) => (
-                <div key={i} className="row" style={{ alignItems: "flex-start" }}>
-                  <span className={`badge ${r.decision.hygiene_ok ? "AUTO" : "BLOCKED"}`}>
-                    {r.decision.hygiene_ok ? "corroborated" : "UNCORROBORATED"}
-                  </span>
-                  {r.decision.hygiene_ok ? (
-                    <span className="muted">all economic claims independently corroborated</span>
-                  ) : (
-                    <span className="err">
-                      {(r.decision.hygiene_violations || []).map((v) => v.code).join(", ")}
+            <table>
+              <thead>
+                <tr><th>capability</th><th>verdict</th><th>ledger</th><th>reason</th></tr>
+              </thead>
+              <tbody>
+                {results.map((r, i) => (
+                  <tr key={i}>
+                    <td className="mono">{r.decision.capability.split(".")[1]}</td>
+                    <td><span className={`badge ${r.decision.verdict}`}>{r.decision.verdict}</span></td>
+                    <td className={r.verify ? "ok" : "err"}>{r.verify ? "verified" : "FAIL"}</td>
+                    <td className="muted">{r.decision.reason || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {results.some((r) => typeof r.decision.hygiene_ok === "boolean") && (
+              <div style={{ marginTop: 12 }}>
+                <h3>Epistemic hygiene</h3>
+                {results.filter((r) => typeof r.decision.hygiene_ok === "boolean").map((r, i) => (
+                  <div key={i} className="row" style={{ alignItems: "flex-start" }}>
+                    <span className={`badge ${r.decision.hygiene_ok ? "AUTO" : "BLOCKED"}`}>
+                      {r.decision.hygiene_ok ? "corroborated" : "UNCORROBORATED"}
                     </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+                    {r.decision.hygiene_ok ? (
+                      <span className="muted">all economic claims independently corroborated</span>
+                    ) : (
+                      <span className="err">
+                        {(r.decision.hygiene_violations || []).map((v) => v.code).join(", ")}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
       </div>
@@ -163,6 +185,35 @@ function AuthorizeInner() {
             <div className="pre mono accent">{liveResult.addr}</div>
             <span className="muted">signature (r||s||v):</span>
             <div className="pre mono">{liveResult.sig}</div>
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <h2>Operator downgrade (ADR 18, fail-closed)</h2>
+        <p className="muted">
+          Release a hygiene-BLOCKED action via a <strong>signed</strong> operator
+          downgrade. The gateway verifies the signature against the tenant&apos;s
+          operator allowlist; a 2-of-2 operator signature is required to release a
+          <code> destination_off_allowlist</code> / <code>destination_untrusted</code>{" "}
+          override. Spine-BLOCKED actions can never be downgraded.
+        </p>
+        <div className="row" style={{ marginTop: 10 }}>
+          <input
+            style={{ minWidth: 360, flex: 1 }}
+            placeholder='{ "action": {...}, "downgrade": {...} }'
+            value={downgradePayload}
+            onChange={(e) => setDowngradePayload(e.target.value)}
+          />
+          <button onClick={runDowngrade}>Submit downgrade</button>
+        </div>
+        {downgradeResult && (
+          <div className="row" style={{ marginTop: 12, flexDirection: "column", alignItems: "flex-start" }}>
+            <span className="muted">verdict:</span>
+            <div className={`badge ${downgradeResult.verdict}`}>{downgradeResult.verdict}</div>
+            {downgradeResult.downgraded && (
+              <span className="ok">released violations: {downgradeResult.downgrade_violations?.join(", ")}</span>
+            )}
           </div>
         )}
       </div>
