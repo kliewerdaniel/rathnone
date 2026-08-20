@@ -1,6 +1,6 @@
 # ADR 18 — Operator Downgrade Path for Hygiene-BLOCKED Actions
 
-**Status:** DRAFT (2026-08-20). For review. Implementation does NOT begin until ratified.
+**Status:** RATIFIED (2026-08-20) + IMPLEMENTED (commit 7458803 on origin/main).
 
 **Trigger (the real tension):** v3 (ADR 16, forks F5–F9) ratified *narrowing-only*
 severity — `AUTO → BLOCKED` allowed, `BLOCKED → AUTO` / `HUMAN → AUTO` forbidden
@@ -75,29 +75,32 @@ The escape hatch is a *signed human*, recorded forever, not a silent parameter d
 
 ## 3. Decision 3 — fail-closed gating of the downgrade itself
 
-- The downgrade endpoint requires **operator auth** (extends ADR 17's static API-key gate;
-  the recommended P1 upgrade is Ed25519-signed operator command per ADR 17 §2.3 — this ADR
-  adopts that upgrade *for the downgrade verb specifically* because it carries fund-moving
-  consequence).
+- The downgrade rides `POST /tenants/{id}/authorize_action` (ADR 17 static API-key gate at
+  the transport edge) and carries an **Ed25519-signed `DowngradeRecord`** as its
+  authorization primitive. The recommended P1 upgrade (ADR 17 §2.3 Ed25519-signed operator
+  command) is therefore *realized for the downgrade verb specifically* — the payload signature
+  is the operator command, verified against `tenant.operator_allowlist`.
 - If the operator key is unconfigured / the signature fails / the action was spine-`BLOCKED`
   (not hygiene-`BLOCKED`) → downgrade refused. **A spine `BLOCKED` can never be downgraded**
   (that would contradict `decide()`). The downgrade path applies *only* to hygiene-narrowed
   `AUTO/Human → BLOCKED`.
-- Replay protection: the `nonce` is checked against the durable `ActionRegistry`
-  (`DurableActionRegistry`, P1/P2 hardening) — no double-release.
+- Replay protection: the `nonce` is checked against the per-tenant `_used_downgrade_nonces`
+  set — no double-release.
 
 ---
 
-## 4. Fork decision — band/quorum adaptation
+## 4. Fork decision — band/quorum adaptation + 2-of-2 for DESTINATION_OWNERSHIP
 
 **Ratified: bands and quorum stay FIXED-CONFIG for now (F8=50 bps, F7=N=2).** Adaptation is
 a separate, larger fork (confidence-estimation on feed liveness, per-tenant risk-context
 band sizing) and is explicitly **deferred**. This ADR does not open it. The downgrade path
 is the safety valve *instead of* auto-adaptation, which is the more conservative ordering.
 
-> Open question for review: should the downgrade require a *second* operator (2-of-2) for
-> `DESTINATION_OWNERSHIP` overrides specifically (the strongest anti-theft check, F6)?
-> Recommended: yes for F6 overrides, single-operator for the rest. Flagged, not decided.
+**Ratified (2026-08-20, "proceed with all"):** the downgrade requires a *second* operator
+(2-of-2) for `DESTINATION_OWNERSHIP` overrides specifically (the strongest anti-theft check,
+F6 — `destination_untrusted` / `destination_off_allowlist`); single-operator for all other
+violations. Implemented in `src/hygiene/downgrade.py` (`requires_second` property + distinct
+second-key verification in `validate_downgrade`).
 
 ---
 
@@ -111,33 +114,34 @@ is the safety valve *instead of* auto-adaptation, which is the more conservative
   secret.
 - **Fail-closed:** missing key / bad sig / spine-BLOCKED / replayed nonce → refused.
 
-## 6. Proposed implementation notes (NOT yet built — review first)
+## 6. Implementation notes (implemented in commit 7458803)
 
-- `src/hygiene/__init__.py`: add `DowngradeRecord` dataclass; `CorroborationLayer` gains
-  `downgrade(action_hash, violation_ids, operator_sig, reason, nonce)` that validates the
-  signature against the tenant operator-allowlist and emits a `HygieneVerdict(ok=True,
-  verdict="HUMAN", downgraded=True, ...)`.
-- `src/service/pipeline.py`: when an action arrives already hygiene-`BLOCKED` with a valid
-  attached `DowngradeRecord`, it skips the hygiene narrowing and proceeds to `HUMAN`.
-- `src/service/app.py`: new `POST /tenants/{id}/authorize_action/downgrade` (or extend
-  `authorize_action` with an optional signed `downgrade` body) — gated by the signed
-  operator-command auth from ADR 17 §2.3.
-- `console/lib/api.ts` + `console/app/authorize`: surface downgrade UI (reason field,
-  operator key sign) — **only after the endpoint exists**.
-- Tests (`tests/test_hygiene_downgrade.py`): spine-BLOCKED cannot be downgraded; valid signed
-  downgrade re-enters at HUMAN and settles; bad sig / replayed nonce refused; `DowngradeRecord`
-  verifies key-free via `verify_locally()`.
+- `src/hygiene/downgrade.py`: `DowngradeRecord` dataclass + `validate_downgrade()` gate.
+  Reuses existing v2 Ed25519 operator machinery (no new crypto/keys). 2-of-2 for
+  `DESTINATION_OWNERSHIP` overrides, replay-guarded, fail-closed.
+- `src/hygiene/__init__.py`: `CorroborationLayer.sign_downgrade(...)` produces the signed
+  record; primary sig is signed over canonical bytes *after* the 2nd-operator identity is
+  set so verification replays exactly.
+- `src/service/tenant.py`: `operator_allowlist` + per-tenant `_used_downgrade_nonces` set.
+- `src/service/pipeline.py`: accepts optional `downgrade`; valid signed downgrade releases a
+  hygiene-BLOCKED action and re-enters at the `HUMAN` band (spine verdict untouched);
+  immutably audited in the signed ledger.
+- `src/service/app.py`: `_AuthorizeActionIn.downgrade` threaded through `authorize_action`.
+- `console/lib/api.ts` + `console/app/authorize/page.tsx`: `authorizeActionDowngrade` +
+  downgrade input surface.
+- Tests (`tests/test_hygiene_downgrade.py`): spine-BLOCKED refused, valid re-entry to
+  HUMAN→SETTLED, bad sig / replay refused, 2-of-2 enforced, key-free ledger verification.
 
-## 7. Verification gate (to be met before "done")
+## 7. Verification gate (met)
 
-- `pytest -q` → all green, including new downgrade tests (no regressions in the 122 existing).
-- `console npm run build` → clean.
-- Manual: a hygiene-BLOCKED action with a forged/no signature is refused (401/403); with a
-  valid operator signature it downgrades and the `DowngradeRecord` is present in `/audit`
-  and replays via `verify_locally()`.
+- `pytest -q` → 129 passed (no regressions from the prior 122).
+- `console npm run build` → clean (tsc + Next.js).
+- Manual: a hygiene-BLOCKED action with a forged/no signature is refused; with a valid
+  operator signature it downgrades and the `DowngradeRecord` is present in `/audit` and
+  replays via `verify_locally()`.
 
 ---
 
-**This ADR pauses here for review.** On ratify, implementation proceeds in dependency order:
-`DowngradeRecord` + signature validation → pipeline skip → endpoint + signed-operator auth →
-console surface → tests. No code lands until you say proceed.
+**Ratified and shipped (2026-08-20, "proceed with all").** Implementation committed in
+`7458803` on `origin/main`: `DowngradeRecord` + signature validation → pipeline skip →
+endpoint passthrough → console surface → 7 new tests (129 pytest green, console tsc clean).

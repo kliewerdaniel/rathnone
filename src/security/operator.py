@@ -126,4 +126,98 @@ def load_operator_public_key(pem: str):
     return serialization.load_pem_public_key(pem.encode())
 
 
-__all__ = ["OperatorAuthority", "ApprovalRecord", "load_operator_public_key"]
+# ---------------------------------------------------------------------------
+# ADR 19 — signed operator commands (attributed, replay-guarded, command-bound)
+#
+# A *signed operator command* is the authorization primitive for safety-critical
+# verbs (halt / resume / live authorize). It binds the operator's Ed25519 key to a
+# SPECIFIC verb + tenant + request body hash + nonce + timestamp, so:
+#   - attribution:  the operator pubkey/id are recorded (who issued the command),
+#   - replay:       the nonce is checked against a used-nonce set,
+#   - binding:      body_hash ties the command to the exact request (no "halt A,
+#                   replay as halt B"),
+#   - expiry:       timestamp must fall within an acceptance window.
+# No new crypto: it reuses the exact Ed25519 verify path the downgrade record uses.
+# ---------------------------------------------------------------------------
+
+import hashlib
+
+
+def body_hash_of(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+@dataclass
+class OperatorCommand:
+    """A signed operator command (ADR 19).
+
+    Signed over (verb, tenant_id, body_hash, nonce, timestamp, operator_id,
+    pubkey_pem). ``body_hash`` is the sha256 of the canonical request body, so
+    the command cannot be reused against a different request.
+    """
+
+    verb: str
+    tenant_id: str
+    body_hash: str
+    nonce: int = 0
+    timestamp: int = 0
+    operator_id: str = "rathnone-operator"
+    pubkey_pem: str = ""          # recorded for key-free ledger verification (Inv 3)
+    sig: str = ""                 # hex(Ed25519) over canonical record
+
+    def canonical_bytes(self) -> bytes:
+        return _canonical({
+            "verb": self.verb,
+            "tenant_id": self.tenant_id,
+            "body_hash": self.body_hash,
+            "nonce": self.nonce,
+            "timestamp": self.timestamp,
+            "operator_id": self.operator_id,
+            "pubkey_pem": self.pubkey_pem,
+        })
+
+    def verify(self, public_key) -> bool:
+        if not self.sig:
+            return False
+        try:
+            public_key.verify(bytes.fromhex(self.sig), self.canonical_bytes())
+            return True
+        except Exception:
+            return False
+
+
+def verify_command(cmd: "OperatorCommand", *, body: bytes,
+                   allowlist_pems: list[str], used_nonces: set[int],
+                   now: int, max_age_s: int = 60) -> tuple[bool, Optional[str]]:
+    """Fail-closed gate for a signed operator command (ADR 19).
+
+    Returns (ok, reason). Refuses when:
+      - the command does not bind to this exact request body (body_hash mismatch),
+      - the signature fails against every key on the operator allowlist,
+      - the nonce was already used (replay),
+      - or the timestamp is outside the acceptance window.
+    """
+    if not allowlist_pems:
+        return False, "no operator allowlist configured (fail-closed)"
+    if cmd.body_hash != body_hash_of(body):
+        return False, "command body_hash does not match the request body"
+    if cmd.nonce in used_nonces:
+        return False, f"command nonce {cmd.nonce} already used (replay)"
+    # ``now`` and ``cmd.timestamp`` are both nanosecond-resolution (the app clock
+    # is monotonic_ns in production, an injectable ns counter in tests), so the
+    # acceptance window must be expressed in nanoseconds.
+    max_age_ns = max_age_s * 1_000_000_000
+    if cmd.timestamp < 0 or abs(now - cmd.timestamp) > max_age_ns:
+        return False, f"command timestamp {cmd.timestamp} outside acceptance window"
+    for pem in allowlist_pems:
+        try:
+            pk = load_operator_public_key(pem)
+        except Exception:
+            continue
+        if cmd.verify(pk):
+            return True, None
+    return False, "command signature does not verify against any operator key"
+
+
+__all__ = ["OperatorAuthority", "ApprovalRecord", "load_operator_public_key",
+           "OperatorCommand", "verify_command", "body_hash_of"]

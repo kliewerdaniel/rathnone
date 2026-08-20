@@ -172,10 +172,10 @@ class AuthorizationPipeline:
                 downgrade, action=action,
                 hygiene_violations=res.hygiene_violations,
                 operator_allowlist=self._tenant.operator_allowlist,
-                used_nonces=self._tenant._used_downgrade_nonces)
+                used_nonces=self._tenant._used_command_nonces)
             if ok:
                 downgraded = True
-                self._tenant._used_downgrade_nonces.add(downgrade.nonce)
+                self._tenant._used_command_nonces.add(downgrade.nonce)
                 # The downgrade stands in for the human approval: bind it so the
                 # pipeline's existing HUMAN/approval path treats this as approved.
                 if verdict == "AUTO":

@@ -2,7 +2,7 @@
 
 **One-line definition:** A Sovereign Finance Gateway — a commercial product that rides the frozen, model-independent `fleet.epistemic.decide()` authorization spine from `sovereign-agent-fleet` to govern consequential finance actions (trade execution, treasury rebalance, on-chain settlement) with cryptographic verifiability and an immutable audit ledger.
 
-**Status:** Implemented & verified. v1 (53 tests) + v2 control plane (16 adversarial) + v3 epistemic-hygiene layer + operator console (safety, trace, reconcile) all shipped and green (98 pytest). Forks F1–F4 + F5–F9 ratified. Live track + hygiene gate are opt-in, fail-closed.
+**Status:** Implemented & verified. v1 (53 tests) + v2 control plane (16 adversarial) + v3 epistemic-hygiene layer + operator console (safety, trace, reconcile) + ADR 18 operator-downgrade path all shipped and green (129 pytest). Forks F1–F4 + F5–F9 ratified; ADR 18 operator-downgrade ratified. Live track + hygiene gate + operator downgrade are opt-in, fail-closed.
 
 ## Doc map
 
@@ -25,7 +25,8 @@
 | `14-V2-CONTROL-PLANE.md` | v2 authorization plane: 11-layer pipeline, signed approvals, replay, evidence graph |
 | `15-OPERATOR-CONSOLE.md` | Operator console surface: console→endpoint map, /reconcile, V4 breaker, verification |
 | `16-V3-EPISTEMIC-HYGIENE.md` | v3 IMPLEMENTED: epistemic-hygiene / knowledge-poisoning layer (forks F5–F9 ratified) |
-| `18-OPERATOR-DOWNGRADE.md` | ADR 18 DRAFT: signed operator downgrade path for hygiene-BLOCKED (review, not yet built) |
+| `18-OPERATOR-DOWNGRADE.md` | ADR 18 RATIFIED+IMPLEMENTED: signed operator downgrade path for hygiene-BLOCKED (commit 7458803) |
+| `19-OPERATOR-COMMAND-AUTH.md` | ADR 19 DRAFT: signed Ed25519 operator commands for safety-critical verbs (review) |
 
 ## Planned folder layout (target, not yet created)
 

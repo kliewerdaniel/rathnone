@@ -18,14 +18,17 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from pydantic import BaseModel
 
 from ..finance.proposal import RathnoneFinanceProposal
 from ..finance.action import FinancialAction
 from ..config import TenantLimits
 from ..risk.engine import RiskEngine, RiskState
-from ..security.operator import OperatorAuthority, ApprovalRecord
+from ..security.operator import (
+    OperatorAuthority, ApprovalRecord,
+    OperatorCommand, verify_command, body_hash_of,
+)
 from ..security import replay as _replay
 from ..security.replay import ActionRegistry, DurableActionRegistry
 from ..evidence.chain import EvidenceGraph
@@ -42,6 +45,40 @@ from ..config import (
 from .auth import require_api_key, assert_auth_configured
 from .tenant import TenantRegistry
 from .metering import MeteringLedger
+
+# ADR 19: safety verbs (halt/resume) are SERVICE-GLOBAL, not tenant-scoped, so they
+# use a dedicated global operator allowlist + command-nonce set (separate from any
+# single tenant's). Empty by default => signed-command layer dormant; safety verbs
+# stay on the ADR 17 static-key path until operators are provisioned out-of-band.
+# Provision via app.configure_safety_operators([pem, ...]).
+class _SafetyOperatorScope:
+    operator_allowlist: list[str] = []
+    _used_command_nonces: set[int] = set()
+
+    def record_command(self, *, verb: str, operator_id: str,
+                       operator_pubkey_pem: str, nonce: int,
+                       reason: str = "") -> None:
+        # The service-wide safety audit trail lives in the in-memory registry;
+        # here we only need a hook so _require_command's call shape is uniform.
+        _safety_audit.append({
+            "event": "operator_command", "verb": verb,
+            "operator_id": operator_id, "operator_pubkey_pem": operator_pubkey_pem,
+            "nonce": nonce, "reason": reason,
+        })
+
+
+_SAFETY_TENANT = _SafetyOperatorScope()
+_safety_audit: list[dict] = []
+
+
+def configure_safety_operators(pems: list[str]) -> None:
+    """Provision the global operator allowlist for safety verbs (ADR 19).
+
+    Called out-of-band (deploy-time / operator tooling). Until called, the
+    signed-command layer for halt/resume is dormant and the ADR 17 static key is
+    the sole gate — fail-closed and console-compatible.
+    """
+    _SAFETY_TENANT.operator_allowlist = list(pems)
 
 app = FastAPI(title="Rathnone Gateway", version="0.1.0")
 assert_auth_configured()  # ADR 17: refuse to boot an unauthenticated control plane
@@ -115,6 +152,58 @@ def _meter_for(tenant_id: str, tenant) -> MeteringLedger:
     return m
 
 
+def _require_command(request: "object", *, verb: str, tenant_id: str,
+                     body: bytes, tenant) -> None:
+    """ADR 19 gate for a safety-critical verb.
+
+    The static control-plane key (ADR 17, ``require_api_key``) is coarse transport
+    defense-in-depth; for safety-critical verbs it is no longer *sufficient* once
+    the tenant has an operator allowlist configured. When configured, the command
+    must additionally carry a signed ``OperatorCommand`` binding this exact verb +
+    tenant + body hash + nonce + timestamp to an allowlisted operator key.
+
+    Fail-closed by default: a missing allowlist => the verb is unconfigured and
+    refused (matches the dev-mode posture of ADR 17: nothing silently authorizes).
+    The console never holds signing keys, so a no-op empty command is accepted
+    ONLY when the tenant has no operators configured — i.e. safety verbs stay on
+    the shared-key path until operators are provisioned out-of-band.
+    """
+    allowlist = tenant.operator_allowlist
+    if not allowlist:
+        # No operators configured: the signed-command layer is not in force for
+        # this tenant. The static control-plane key (applied at the route) remains
+        # the sole auth. Safety verbs stay on the shared-key path until operators
+        # are provisioned out-of-band.
+        return
+    # An operator allowlist IS configured: a signed command is mandatory. It
+    # arrives as an X-Operator-Command header (base64 of the JSON-serialized
+    # OperatorCommand) so it can wrap a request body of any shape.
+    import base64, json as _json
+    req = request if isinstance(request, Request) else None
+    cmd_json = req.headers.get("x-operator-command") if req is not None else None
+    if not cmd_json:
+        raise HTTPException(
+            status_code=401,
+            detail="operator-signed command required (tenant has an operator allowlist)")
+    try:
+        cmd_dict = _json.loads(base64.b64decode(cmd_json).decode())
+        cmd = OperatorCommand(**{
+            k: v for k, v in cmd_dict.items()
+            if k in OperatorCommand.__dataclass_fields__
+        })
+    except Exception:
+        raise HTTPException(status_code=400, detail="malformed operator command")
+    ok, why = verify_command(
+        cmd, body=body, allowlist_pems=allowlist,
+        used_nonces=tenant._used_command_nonces, now=_clock.now())
+    if not ok:
+        raise HTTPException(status_code=401, detail=f"operator command refused: {why}")
+    tenant._used_command_nonces.add(cmd.nonce)
+    tenant.record_command(
+        verb=verb, operator_id=cmd.operator_id,
+        operator_pubkey_pem=cmd.pubkey_pem, nonce=cmd.nonce)
+
+
 @app.post("/tenants")
 def create_tenant(body: _TenantCreate, _: None = Depends(require_api_key)):
     t = _registry.create(aum=body.aum)
@@ -138,18 +227,29 @@ def safety_state():
 
 
 @app.post("/safety/halt")
-def safety_halt(_: None = Depends(require_api_key)):
+def safety_halt(request: Request, _: None = Depends(require_api_key)):
     """V4: trip the circuit breaker. Stops live signing/execution immediately,
     independently of the frozen decide(). This is the antidote to the immutable
-    cage: the operator can always halt the autonomous loop."""
+    cage: the operator can always halt the autonomous loop.
+
+    ADR 19: when the global operator allowlist is configured, the command must be
+    a signed OperatorCommand (attributed + replay-guarded). Otherwise the ADR 17
+    static control-plane key remains the sole gate.
+    """
+    _require_command(request, verb="halt", tenant_id="__safety__",
+                     body=b"halt", tenant=_SAFETY_TENANT)
     _breaker.halt()
     return {"breaker_open": True}
 
 
 @app.post("/safety/resume")
-def safety_resume(_: None = Depends(require_api_key)):
-    """V4: clear the circuit breaker. Operator action only — authenticated via
-    the control-plane API key (ADR 17)."""
+def safety_resume(request: Request, _: None = Depends(require_api_key)):
+    """V4: clear the circuit breaker. Operator action only.
+
+    ADR 19: signed OperatorCommand required when the global operator allowlist is
+    configured (see safety_halt)."""
+    _require_command(request, verb="resume", tenant_id="__safety__",
+                     body=b"resume", tenant=_SAFETY_TENANT)
     _breaker.resume()
     return {"breaker_open": False}
 

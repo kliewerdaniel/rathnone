@@ -57,7 +57,7 @@ class Tenant:
     settlement_key: Optional[Secp256k1Signer] = None
     settlement_allowlist: set[str] = field(default_factory=set)  # v3 F6: trusted destinations
     operator_allowlist: list[str] = field(default_factory=list)  # ADR 18: operator Ed25519 pubkey PEMs
-    _used_downgrade_nonces: set[int] = field(default_factory=set, repr=False)
+    _used_command_nonces: set[int] = field(default_factory=set, repr=False)  # ADR 19: signed-command replay set
     _records: list[dict] = field(default_factory=list, repr=False)
     _head: bytes = field(default=GENESIS, repr=False)
 
@@ -138,6 +138,24 @@ class Tenant:
 
     def audit(self) -> list[dict]:
         return list(self._records)
+
+    def record_command(self, *, verb: str, operator_id: str,
+                       operator_pubkey_pem: str, nonce: int,
+                       reason: str = "") -> dict:
+        """Append an ADR 19 operator-command event to the signed ledger.
+
+        Records WHO issued the command (operator pubkey + id) — closing the
+        attribution gap the static shared key left open. Key-free verifiable
+        (Inv 3): the pubkey pem is recorded alongside the entry.
+        """
+        return self.append_ledger({
+            "event": "operator_command",
+            "verb": verb,
+            "operator_id": operator_id,
+            "operator_pubkey_pem": operator_pubkey_pem,
+            "nonce": nonce,
+            "reason": reason,
+        })
 
     def verify_locally(self) -> tuple[bool, Optional[str]]:
         """Independent key-free verify using only this tenant's PUBLIC key.
