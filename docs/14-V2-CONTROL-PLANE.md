@@ -1,6 +1,6 @@
 # Rathnone v2 — Financial Authorization & Settlement Control Plane
 
-**Status: IMPLEMENTED & VERIFIED — all P0+P1 shipped, 69 pytest green (53 v1 + 16 adversarial). Not yet committed (standing discipline: review before push).**
+**Status: IMPLEMENTED & VERIFIED — full v2 control plane + real L2 venue + operator console shipped. 85 pytest green (incl. the real-venue gateway e2e). Not yet committed (standing discipline: review before push).**
 
 This document extends Rathnone from a *secure signing gateway* into a *financial
 control plane*: a deterministic authority layer that turns an autonomous agent's
@@ -205,8 +205,12 @@ events. Default = simulated; no live RPC required. Directly powers Attacks 08/09
 ---
 
 ## 7. Verification plan (REAL, executed)
-- `pytest` → **69 passed** (53 v1 + 16 adversarial). Each scenario emits a
-  verifiable evidence artifact under `tests/scenarios/artifacts/`.
+- `pytest` → **85 passed**: 53 v1 + 16 adversarial scenarios + live-track suite +
+  real-venue unit tests (`test_real_l2_venue.py`) + real-venue **gateway e2e**
+  (`test_real_venue_e2e.py`) which drives a live tenant through
+  `POST /tenants/{id}/authorize_action` with a fake JSON-RPC transport and
+  independently recovers the on-chain signer of the broadcasted EIP-155 tx
+  (no private key) — proving the real venue signs with the tenant's own key.
 - Host smoke: `POST /tenants` (live=true) → `POST /tenants/{id}/authorize_action`
   → AUTO verdict, real secp256k1 sig committed, `live_sign` ledger event
   persisted, `verify_locally()` returns True.

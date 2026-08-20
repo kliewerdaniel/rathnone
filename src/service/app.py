@@ -29,7 +29,7 @@ from ..security.operator import OperatorAuthority, ApprovalRecord, load_operator
 from ..security import replay as _replay
 from ..evidence.chain import EvidenceGraph
 from ..service.pipeline import AuthorizationPipeline
-from ..venue.adapter import summarize_reconciliation
+from ..venue.adapter import summarize_reconciliation, get_venue
 from ..finance.adapters import (
     execute_trade_execute, execute_treasury_rebalance, execute_chain_settle,
     ExecutionRefused,
@@ -44,7 +44,6 @@ from ..config import (
 )
 from .tenant import TenantRegistry
 from .metering import MeteringLedger
-from ..venue.adapter import summarize_reconciliation, get_venue
 
 app = FastAPI(title="Rathnone Gateway", version="0.1.0")
 _registry = TenantRegistry()
@@ -384,6 +383,7 @@ def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
         "replay_ok": result.replay_ok,
         "state": result.state.value,
         "venue_state": result.venue_state,
+        "tx_hash": getattr(result, "tx_hash", None),
         "reconciliation": result.reconciliation,
         "reconciliation_detail": result.reconciliation_detail,
         "live_record": result.live_record,

@@ -59,6 +59,7 @@ class PipelineResult:
     live_record: Optional[dict] = None
     state: ActionState = ActionState.PROPOSED
     venue_state: Optional[str] = None
+    tx_hash: Optional[str] = None     # broadcast tx hash (real venue) or None
     reconciliation: Optional[str] = None     # code
     reconciliation_detail: Optional[str] = None
     evidence_events: list = field(default_factory=list)
@@ -263,6 +264,7 @@ class AuthorizationPipeline:
         # --- 8. VENUE submit ---
         venue_rep = self._venue.submit(action)
         res.venue_state = venue_rep.state.value
+        res.tx_hash = venue_rep.tx_hash
         self._emit(action, ActionState.SUBMITTED, "SUBMISSION", ah,
                    {"venue_state": venue_rep.state.value,
                     "tx_hash": venue_rep.tx_hash})
