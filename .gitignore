@@ -26,3 +26,4 @@ console/out/
 # Misc
 *.log
 console/tsconfig.tsbuildinfo
+.live_probe_key
