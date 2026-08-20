@@ -51,8 +51,9 @@ export const api = {
   reconciliation: (tid: string) => req(`/tenants/${tid}/reconciliation`),
   evidence: (tid: string, actionId: string) =>
     req(`/tenants/${tid}/evidence/${actionId}`),
-  executeLive: (tid: string, body: object) =>
-    req(`/tenants/${tid}/execute_live`, { method: "POST", body: JSON.stringify(body) }),
+  // v2 control plane: the SINGLE path to authorization + (opt-in) live signing.
+  authorizeAction: (tid: string, body: object) =>
+    req(`/tenants/${tid}/authorize_action`, { method: "POST", body: JSON.stringify(body) }),
   safety: () => req(`/safety`),
   safetyHalt: () => req(`/safety/halt`, { method: "POST" }),
   safetyResume: () => req(`/safety/resume`, { method: "POST" }),

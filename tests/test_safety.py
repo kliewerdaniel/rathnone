@@ -24,12 +24,6 @@ def _reset():
     _breaker.resume()
 
 
-_LIVE = {
-    "request_id": "r1",
-    "capability": "rathnone.chain_settle",
-    "action_descriptor": "settle",
-    "payload": {"to": "0x" + "ab" * 20, "value": "1000000000000000000", "nonce": 1},
-}
 _ACTION = {
     "action_id": "x", "actor": "a", "capability": "rathnone.chain_settle",
     "instrument": "USDC", "side": "transfer", "quantity": 1.0, "price_limit": 1.0,
@@ -44,10 +38,10 @@ def test_safety_halt_independent_of_verdict():
     r = c.post("/tenants", json={"aum": 5_000_000, "live": True})
     tid = r.json()["tenant_id"]
 
-    # Closed: live signing succeeds on AUTO.
-    ok = c.post(f"/tenants/{tid}/execute_live", json=_LIVE)
+    # Closed: live signing succeeds on AUTO (single authorized path).
+    ok = c.post(f"/tenants/{tid}/authorize_action", json={"action": _ACTION, "denylist": []})
     assert ok.status_code == 200, ok.text
-    assert ok.json()["decision"]["verdict"] == "AUTO"
+    assert ok.json()["verdict"] == "AUTO"
 
     # Trip the breaker.
     h = c.post("/safety/halt")
@@ -55,14 +49,11 @@ def test_safety_halt_independent_of_verdict():
     s = c.get("/safety").json()
     assert s["breaker_open"] is True and s["live_signing_enabled"] is False
 
-    # Open: live signing is refused regardless of what the model would say.
-    blocked = c.post(f"/tenants/{tid}/execute_live", json={**_LIVE, "request_id": "r2",
-                                                           "payload": {**_LIVE["payload"], "nonce": 2}})
+    # Open: the single authorize_action path is refused at the breaker regardless
+    # of what the model would say.
+    blocked = c.post(f"/tenants/{tid}/authorize_action",
+                     json={"action": {**_ACTION, "nonce": 2}, "denylist": []})
     assert blocked.status_code == 503, blocked.text
-
-    # Open: authorize_action (full pipeline) is also refused at the breaker.
-    au = c.post(f"/tenants/{tid}/authorize_action", json={"action": _ACTION, "denylist": []})
-    assert au.status_code == 503, au.text
 
     # Resume: path reopens.
     res = c.post("/safety/resume")

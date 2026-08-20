@@ -18,35 +18,32 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 
 from ..finance.proposal import RathnoneFinanceProposal
 from ..finance.action import FinancialAction, action_from_intent, action_from_order
 from ..config import TenantLimits
 from ..risk.engine import RiskEngine, RiskState
-from ..security.operator import OperatorAuthority, ApprovalRecord, load_operator_public_key
+from ..security.operator import OperatorAuthority, ApprovalRecord
 from ..security import replay as _replay
 from ..evidence.chain import EvidenceGraph
 from ..service.pipeline import AuthorizationPipeline
 from ..venue.adapter import summarize_reconciliation, get_venue
-from ..finance.adapters import (
-    execute_trade_execute, execute_treasury_rebalance, execute_chain_settle,
-    ExecutionRefused,
-)
 from .. import hygiene as _hyg
 from ..security.guards import (
     CircuitBreaker, VelocityGuard, Clock,
-    assert_no_pii, sanitize_advisory_evidence,
-    validate_settlement_intent, validate_order,
+    sanitize_advisory_evidence,
 )
 from ..config import (
     max_settlement_value_wei, live_signing_rate_max_per_window,
 )
+from .auth import require_api_key, assert_auth_configured
 from .tenant import TenantRegistry
 from .metering import MeteringLedger
 
 app = FastAPI(title="Rathnone Gateway", version="0.1.0")
+assert_auth_configured()  # ADR 17: refuse to boot an unauthenticated control plane
 _registry = TenantRegistry()
 _meters: dict[str, MeteringLedger] = {}
 
@@ -115,7 +112,7 @@ def _meter_for(tenant_id: str, tenant) -> MeteringLedger:
 
 
 @app.post("/tenants")
-def create_tenant(body: _TenantCreate):
+def create_tenant(body: _TenantCreate, _: None = Depends(require_api_key)):
     t = _registry.create(aum=body.aum)
     if body.live:
         t.enable_live()
@@ -125,7 +122,7 @@ def create_tenant(body: _TenantCreate):
 
 
 @app.get("/tenants")
-def list_tenants():
+def list_tenants(_: None = Depends(require_api_key)):
     return {"tenant_ids": _registry.ids()}
 
 
@@ -137,7 +134,7 @@ def safety_state():
 
 
 @app.post("/safety/halt")
-def safety_halt():
+def safety_halt(_: None = Depends(require_api_key)):
     """V4: trip the circuit breaker. Stops live signing/execution immediately,
     independently of the frozen decide(). This is the antidote to the immutable
     cage: the operator can always halt the autonomous loop."""
@@ -146,8 +143,9 @@ def safety_halt():
 
 
 @app.post("/safety/resume")
-def safety_resume():
-    """V4: clear the circuit breaker (operator action only)."""
+def safety_resume(_: None = Depends(require_api_key)):
+    """V4: clear the circuit breaker. Operator action only — authenticated via
+    the control-plane API key (ADR 17)."""
     _breaker.resume()
     return {"breaker_open": False}
 
@@ -192,135 +190,6 @@ def authorize(tenant_id: str, body: _AuthorizeIn):
     )
     return {"decision": asdict(decision), "ledger_entry": rec,
             "verify": t.verify_locally()[0]}
-
-
-@app.post("/tenants/{tenant_id}/execute")
-def execute(tenant_id: str, request_id: str, capability: str,
-            action_descriptor: str, verdict: str,
-            simulated: bool = True, human_approved: bool = False):
-    """Fail-closed execution: refuses unless previously authorized (AUTO/HUMAN)."""
-    t = _get_tenant(tenant_id)
-    proposal = RathnoneFinanceProposal(
-        producer="rathnone-gateway", request_id=request_id,
-        capability=capability, action_descriptor=action_descriptor,
-    )
-    try:
-        if capability == "rathnone.trade_execute":
-            result = execute_trade_execute(proposal, verdict, simulated=simulated,
-                                            human_approved=human_approved)
-        elif capability == "rathnone.treasury_rebalance":
-            result = execute_treasury_rebalance(proposal, verdict, simulated=simulated,
-                                                 human_approved=human_approved)
-        elif capability == "rathnone.chain_settle":
-            result = execute_chain_settle(proposal, verdict, simulated=simulated,
-                                          human_approved=human_approved)
-        else:
-            raise HTTPException(status_code=400, detail="unknown capability")
-    except ExecutionRefused as e:
-        raise HTTPException(status_code=403, detail=f"execution refused: {e}")
-    return asdict(result)
-
-
-class _ExecuteLiveIn(BaseModel):
-    producer: str = "rathnone-gateway"
-    request_id: str
-    capability: str
-    action_descriptor: str
-    # The live payload to be signed (must match what was authorized).
-    payload: dict  # settlement intent OR trade order, canonicalized before signing
-    human_approved: bool = False
-    denylist: tuple = ()
-
-
-@app.post("/tenants/{tenant_id}/execute_live")
-def execute_live(tenant_id: str, body: _ExecuteLiveIn):
-    """Live track (opt-in, fail-closed): produce a REAL signature over an
-    authorized intent/order.
-
-    Flow: run the frozen decide() -> if AUTO and the live track is enabled for
-    this tenant, commit a genuine secp256k1 (settlement) or Ed25519 (order)
-    signature. Refuses (403) unless authorized. Never signs anything that was
-    not AUTO-authorized by the frozen spine.
-    """
-    t = _get_tenant(tenant_id)
-    # V4: the circuit breaker is an independent halt that does NOT require the
-    # frozen decide() to agree. If tripped, live signing stops outright.
-    if _breaker.is_open:
-        raise HTTPException(
-            status_code=503,
-            detail="live signing halted: circuit breaker open (operator control)",
-        )
-    if t.settlement_key is None:
-        raise HTTPException(
-            status_code=403,
-            detail="live track not enabled for tenant (mint with live=true)",
-        )
-    # V2: reject any ledger body that would bind the immutable record to
-    # real-world identity (panopticon defense). Checked before signing.
-    try:
-        assert_no_pii(body.payload)
-    except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    # V1: cap live-signing throughput so the track cannot become a high-frequency
-    # predation engine. Fail-closed: exceeding the limit refuses.
-    try:
-        _velocity.check()
-    except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-    proposal = RathnoneFinanceProposal(
-        producer=body.producer, request_id=body.request_id,
-        capability=body.capability, action_descriptor=body.action_descriptor,
-    )
-    decision = t.authorize(
-        proposal, require_human_approval=False,
-        denylist=tuple(body.denylist),
-    )
-    if decision.verdict != "AUTO":
-        raise HTTPException(
-            status_code=403,
-            detail=f"live signing refused: verdict={decision.verdict}",
-        )
-    # V4: structural sanity for the thing actually being signed. Even with an
-    # AUTO verdict, a structurally impossible / over-ceiling transfer is refused.
-    # The ceiling (_MAX_VALUE_WEI) is env-configurable via
-    # RATHNONE_MAX_SETTLEMENT_VALUE_WEI (None = no ceiling; set in production).
-    try:
-        if body.capability == "rathnone.chain_settle":
-            validate_settlement_intent(body.payload, max_value_wei=_MAX_VALUE_WEI)
-        elif body.capability == "rathnone.trade_execute":
-            validate_order(body.payload)
-    except ValueError as e:
-        raise HTTPException(status_code=403, detail=f"intent rejected: {e}")
-    try:
-        if body.capability == "rathnone.chain_settle":
-            record = t.live_settle(
-                intent=body.payload, decision_ref=decision.request_ref,
-                verdict=decision.verdict)
-        elif body.capability == "rathnone.trade_execute":
-            record = t.live_order(
-                order=body.payload, decision_ref=decision.request_ref,
-                verdict=decision.verdict)
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="live track supports chain_settle and trade_execute",
-            )
-    except Exception as e:
-        raise HTTPException(status_code=403, detail=f"live signing failed: {e}")
-    # Append the live authorization to the tenant's immutable ledger so the
-    # forensic audit trail shows the real signature. Signed with the tenant's
-    # governance key -> part of the same key-free-verifiable chain.
-    ledger_entry = t.append_ledger({
-        "event": "live_sign",
-        "capability": body.capability,
-        "verdict": decision.verdict,
-        "request_id": body.request_id,
-        "settlement_address": record.get("signer_address"),
-        "intent_hash": record.get("intent_hash"),
-        "live_signature": record.get("signature"),
-    })
-    return {"decision": asdict(decision), "live_record": record,
-            "ledger_entry": ledger_entry, "verify": t.verify_locally()[0]}
 
 
 class _AuthorizeActionIn(BaseModel):
@@ -371,6 +240,7 @@ def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
         t, operator=_operator, registry=_replay_registry, evidence=_evidence,
         limits=_limits, risk_engine=_risk_engine, hygiene=_hygiene,
         breaker=_breaker, velocity=_velocity, clock_now=_clock._t,
+        max_value_wei=_MAX_VALUE_WEI,
         venue=get_venue(t, rpc_url=_L2_RPC_URL, chain_id=_L2_CHAIN_ID))
     result = pipe.run(
         action, approval=approval,
@@ -403,7 +273,7 @@ def authorize_action(tenant_id: str, body: _AuthorizeActionIn):
 
 
 @app.get("/tenants/{tenant_id}/evidence/{action_id}")
-def evidence_trace(tenant_id: str, action_id: str):
+def evidence_trace(tenant_id: str, action_id: str, _: None = Depends(require_api_key)):
     """Return the causal evidence chain for one action (the Authorization Trace)."""
     _get_tenant(tenant_id)
     chain = _evidence.trace(action_id)
@@ -418,7 +288,7 @@ def evidence_trace(tenant_id: str, action_id: str):
 
 
 @app.get("/tenants/{tenant_id}/audit")
-def audit(tenant_id: str):
+def audit(tenant_id: str, _: None = Depends(require_api_key)):
     t = _get_tenant(tenant_id)
     ok, reason = t.verify_locally()
     return {"tenant_id": tenant_id, "records": t.audit(),
@@ -426,13 +296,13 @@ def audit(tenant_id: str):
 
 
 @app.get("/tenants/{tenant_id}/meter")
-def meter(tenant_id: str):
+def meter(tenant_id: str, _: None = Depends(require_api_key)):
     t = _get_tenant(tenant_id)
     return _meter_for(tenant_id, t).summary()
 
 
 @app.get("/tenants/{tenant_id}/reconciliation")
-def reconciliation(tenant_id: str):
+def reconciliation(tenant_id: str, _: None = Depends(require_api_key)):
     """Cross-action reconciliation view (v2 P2).
 
     Aggregates the durable per-action reconciliation codes already committed to

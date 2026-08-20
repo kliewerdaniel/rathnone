@@ -78,7 +78,7 @@ regardless of any model verdict.
 
 - `POST /safety/halt` → `breaker_open = true`, `live_signing_enabled = false`.
 - `POST /safety/resume` → re-opens.
-- While open: `authorize_action` and `execute_live` return **503** before any signing.
+- While open: `authorize_action` returns **503** before any signing.
 
 The `/safety` page exposes this with a 2-second auto-refresh and an explicit note that it
 is independent of the epistemic spine. This is the "kill switch" an operator reaches for

@@ -80,7 +80,8 @@ class AuthorizationPipeline:
                  hygiene: Optional["_hyg.CorroborationLayer"] = None,
                  breaker: Optional[CircuitBreaker] = None,
                  velocity: Optional[VelocityGuard] = None,
-                 venue=None, clock_now: int = 0):
+                 venue=None, clock_now: int = 0,
+                 max_value_wei: Optional[int] = None):
         self._tenant = tenant
         self._operator = operator
         self._registry = registry
@@ -93,6 +94,7 @@ class AuthorizationPipeline:
         self._venue = venue or SimulatedVenue()
         self._recon = ReconciliationEngine(self._venue)
         self._now = clock_now
+        self._max_value_wei = max_value_wei  # V4: deployment ceiling (None = no cap)
         self._last_hash = ""      # causal head for the evidence chain
 
     def _emit(self, action: FinancialAction, state: ActionState,
@@ -231,10 +233,17 @@ class AuthorizationPipeline:
             return res
 
         # --- 7. SETTLEMENT structural + bound checks ---
+        # V2 panopticon defense, extended to the v2 action: reject any identity-
+        # binding key an adversary smuggles into the action's advisory evidence
+        # (the ledger is built only from pseudonymous fields, but we refuse the
+        # action outright so no PII-adjacent content ever reaches the pipeline).
         try:
+            if action.evidence:
+                assert_no_pii(action.evidence)
             if action.capability == CAP_FIN_CHAIN_SETTLE:
                 assert_no_pii(action.as_intent())
-                validate_settlement_intent(action.as_intent())
+                validate_settlement_intent(action.as_intent(),
+                                           max_value_wei=self._max_value_wei)
             elif action.capability == CAP_FIN_TRADE_EXECUTE:
                 validate_order(action.as_order())
         except ValueError as e:

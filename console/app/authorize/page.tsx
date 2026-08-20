@@ -42,20 +42,33 @@ function AuthorizeInner() {
   async function runLive() {
     setErr("");
     try {
-      let payload: object;
+      let payload: any;
       try {
         payload = JSON.parse(livePayload);
       } catch {
         throw new Error("payload is not valid JSON");
       }
-      const r = await api.executeLive(tid, {
-        producer: "console-strategy",
-        request_id: requestId,
+      // v2 control plane: the SAME action object is authorized AND signed. There
+      // is no separate "payload" that gets bound after the fact — the signing
+      // layer signs over the canonical FinancialAction hash (see ADR 17).
+      const action = {
+        action_id: requestId,
+        tenant_id: tid,
+        actor: "console-strategy",
         capability: "rathnone.chain_settle",
-        action_descriptor: action,
-        payload,
-      });
+        side: "settle",
+        destination: payload.to,
+        quantity: Number(payload.value || 0),
+        currency: "wei",
+        settlement_asset: "wei",
+        nonce: Number(payload.nonce || 0),
+        ...payload,
+      };
+      const r = await api.authorizeAction(tid, { action, denylist: [] });
       const rec = (r as { live_record: { signature: string; signer_address: string } }).live_record;
+      if (!rec) {
+        throw new Error(`not signed: ${r.verdict} ${r.blocked_reason || ""}`);
+      }
       setLiveResult({ sig: rec.signature, addr: rec.signer_address });
     } catch (e) {
       setErr(String(e));

@@ -101,6 +101,15 @@ def _fresh_registry():
     return reg
 
 
+def _action(tenant_id, action_id="a1"):
+    return {
+        "action_id": action_id, "tenant_id": tenant_id, "actor": "console",
+        "capability": "rathnone.chain_settle", "side": "settle",
+        "destination": "0x" + "ab" * 20, "quantity": 1.0,
+        "currency": "wei", "settlement_asset": "wei", "nonce": 1,
+    }
+
+
 def test_service_live_refused_when_not_enabled():
     from fastapi.testclient import TestClient
     from src.service.app import app, _registry, _meters
@@ -110,10 +119,12 @@ def test_service_live_refused_when_not_enabled():
     r = c.post("/tenants", json={"aum": 5_000_000.0})  # not live
     tid = r.json()["tenant_id"]
     assert r.json()["settlement_address"] is None
-    r2 = c.post(f"/tenants/{tid}/execute_live", json={
-        "request_id": "r1", "capability": "rathnone.chain_settle",
-        "action_descriptor": "settle", "payload": {"to": "0x" + "ab" * 20, "value": "1"}})
-    assert r2.status_code == 403  # live not enabled
+    # The only way to live-sign is via authorize_action; without a settlement key
+    # there is no live_record. The deleted /execute_live bypass is gone.
+    r2 = c.post(f"/tenants/{tid}/authorize_action",
+                json={"action": _action(tid), "denylist": []})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["live_record"] is None  # not enabled -> no signature
 
 
 def test_service_live_settle_signs_when_auto():
@@ -125,13 +136,11 @@ def test_service_live_settle_signs_when_auto():
     j = r.json()
     tid, addr = j["tenant_id"], j["settlement_address"]
     assert addr is not None and addr.startswith("0x")
-    r2 = c.post(f"/tenants/{tid}/execute_live", json={
-        "request_id": "r1", "capability": "rathnone.chain_settle",
-        "action_descriptor": "settle",
-        "payload": {"to": "0x" + "ab" * 20, "value": "1000000000000000000", "nonce": 1}})
+    r2 = c.post(f"/tenants/{tid}/authorize_action",
+                json={"action": _action(tid), "denylist": []})
     assert r2.status_code == 200, r2.text
     body = r2.json()
-    assert body["decision"]["verdict"] == "AUTO"
+    assert body["verdict"] == "AUTO"
     rec = body["live_record"]
     assert rec["signature"] and rec["signer_address"].lower() == addr.lower()
     # Independent re-verify using the public recovery (no private key).
@@ -150,12 +159,10 @@ def test_service_live_refused_on_blocked():
     r = c.post("/tenants", json={"aum": 5_000_000.0, "live": True})
     tid = r.json()["tenant_id"]
     # Deny-list the capability -> BLOCKED -> live signing refused.
-    r2 = c.post(f"/tenants/{tid}/execute_live", json={
-        "request_id": "r1", "capability": "rathnone.chain_settle",
-        "action_descriptor": "settle", "denylist": ["rathnone.chain_settle"],
-        "payload": {"to": "0x" + "ab" * 20, "value": "1"}})
+    r2 = c.post(f"/tenants/{tid}/authorize_action",
+                json={"action": _action(tid), "denylist": ["rathnone.chain_settle"]})
     assert r2.status_code == 403
-    assert "verdict=BLOCKED" in r2.json()["detail"]
+    assert "BLOCKED" in r2.json()["detail"]
 
 
 def test_service_live_signature_lands_in_immutable_ledger():
@@ -166,10 +173,9 @@ def test_service_live_signature_lands_in_immutable_ledger():
     c = TestClient(app)
     r = c.post("/tenants", json={"aum": 5_000_000.0, "live": True})
     tid = r.json()["tenant_id"]
-    intent = {"to": "0x" + "AB" * 20, "value": "1000000000000000000", "nonce": 1}
-    r2 = c.post(f"/tenants/{tid}/execute_live", json={
-        "request_id": "r2", "capability": "rathnone.chain_settle",
-        "action_descriptor": "settle", "payload": intent})
+    action = _action(tid, action_id="a2")
+    r2 = c.post(f"/tenants/{tid}/authorize_action",
+                json={"action": action, "denylist": []})
     body = r2.json()
     assert body["verify"] is True, "ledger must stay valid after live sign"
     # The live signature is independently recoverable straight from the ledger

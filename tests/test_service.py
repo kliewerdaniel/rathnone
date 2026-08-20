@@ -92,29 +92,49 @@ def test_unknown_capability_escalates_human_not_auto():
     assert r.json()["decision"]["verdict"] != "AUTO"
 
 
-def test_execute_refuses_without_authorization():
+def test_execute_endpoint_removed():
+    """ADR 17: the caller-verdict /execute bypass is gone. The single path to
+    signing is /authorize_action, which runs the frozen spine itself."""
     tid = _mint()
     c = _client()
-    # try to execute a BLOCKED/HUMAN verdict directly -> 403 fail-closed
-    r = c.post(f"/tenants/{tid}/execute",
-               params={"request_id": "e1",
-                       "capability": CAP_FIN_TRADE_EXECUTE,
-                       "action_descriptor": "x", "verdict": "HUMAN"})
-    assert r.status_code == 403
-
-
-def test_execute_allowed_with_auto():
-    tid = _mint()
-    c = _client()
-    c.post(f"/tenants/{tid}/authorize", json={
-        "producer": "s", "request_id": "e1",
-        "capability": CAP_FIN_TRADE_EXECUTE, "action_descriptor": "x"})
     r = c.post(f"/tenants/{tid}/execute",
                params={"request_id": "e1",
                        "capability": CAP_FIN_TRADE_EXECUTE,
                        "action_descriptor": "x", "verdict": "AUTO"})
-    assert r.status_code == 200
-    assert r.json()["authorized"] is True
+    assert r.status_code == 404  # endpoint removed, not a silent pass-through
+
+
+def test_execute_live_endpoint_removed():
+    """ADR 17: /execute_live (authorized a thin tuple, signed a separate,
+    unbound payload) is removed. Live signing now happens inside the
+    authorize_action pipeline, bound to the full FinancialAction hash."""
+    tid = _mint()
+    c = _client()
+    r = c.post(f"/tenants/{tid}/execute_live", json={
+        "producer": "s", "request_id": "e1",
+        "capability": CAP_FIN_CHAIN_SETTLE, "action_descriptor": "x",
+        "payload": {"to": "0x" + "ab" * 20, "value": "1", "nonce": 1}})
+    assert r.status_code == 404
+
+
+def test_authorize_action_is_the_signing_path():
+    """The single path both authorizes AND signs (live tenant) over the same
+    action hash — proving no separate unbound payload can be signed."""
+    from src.service.app import _registry
+    tid = _mint()
+    _registry.get(tid).enable_live()  # opt tenant into real signing
+    c = _client()
+    action = {
+        "action_id": "a1", "tenant_id": tid, "actor": "s",
+        "capability": CAP_FIN_CHAIN_SETTLE, "side": "settle",
+        "destination": "0x" + "cd" * 20, "quantity": 1.0,
+        "currency": "wei", "settlement_asset": "wei", "nonce": 1,
+    }
+    r = c.post(f"/tenants/{tid}/authorize_action",
+               json={"action": action, "denylist": []})
+    assert r.status_code == 200, r.text
+    assert r.json()["live_record"]["signature"]
+    assert r.json()["live_record"]["signer_address"] == _registry.get(tid).settlement_address
 
 
 def test_tenant_isolation_forged_record_rejected():

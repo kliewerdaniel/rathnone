@@ -43,9 +43,12 @@ def test_circuit_breaker_halts_live_signing():
     tid = c.post("/tenants", json={"aum": 5_000_000.0, "live": True}).json()["tenant_id"]
     c.post("/safety/halt")
     assert c.get("/safety").json()["breaker_open"] is True
-    r = c.post(f"/tenants/{tid}/execute_live", json={
-        "request_id": "x", "capability": "rathnone.chain_settle",
-        "action_descriptor": "settle", "payload": {"to": "0xAB", "value": "1", "nonce": 1}})
+    r = c.post(f"/tenants/{tid}/authorize_action", json={
+        "action": {"action_id": "cb", "actor": "a",
+                    "capability": "rathnone.chain_settle", "side": "settle",
+                    "destination": "0xAB", "quantity": 1.0, "price_limit": 1.0,
+                    "currency": "wei", "settlement_asset": "wei", "nonce": 1},
+        "denylist": []})
     assert r.status_code == 503, r.text
     c.post("/safety/resume")
     assert c.get("/safety").json()["breaker_open"] is False
@@ -93,10 +96,13 @@ def test_live_signing_rejects_pii_payload_via_service():
     _breaker.resume(); _clock._t = 0
     c = TestClient(app)
     tid = c.post("/tenants", json={"aum": 5_000_000.0, "live": True}).json()["tenant_id"]
-    r = c.post(f"/tenants/{tid}/execute_live", json={
-        "request_id": "x", "capability": "rathnone.chain_settle",
-        "action_descriptor": "settle",
-        "payload": {"to": "0xAB", "value": "1", "nonce": 1, "ssn": "123-45-6789"}})
+    r = c.post(f"/tenants/{tid}/authorize_action", json={
+        "action": {"action_id": "pii", "actor": "a",
+                    "capability": "rathnone.chain_settle", "side": "settle",
+                    "destination": "0xAB", "quantity": 1.0, "price_limit": 1.0,
+                    "currency": "wei", "settlement_asset": "wei", "nonce": 1,
+                    "evidence": {"ssn": "123-45-6789"}},
+        "denylist": []})
     assert r.status_code == 403, r.text
     assert "identity-binding" in r.json()["detail"]
 
@@ -154,29 +160,34 @@ def test_config_max_value_wei_fail_closed():
 def test_service_honors_max_value_wei_env():
     """V4: when RATHNONE_MAX_SETTLEMENT_VALUE_WEI is set, an over-ceiling
     settlement is refused at the service layer (403), even with an AUTO verdict."""
-    import os, sys, importlib
+    import os
+    import src.service
+    # Reach the genuine service module dict (src.service.app is shadowed to the
+    # FastAPI instance) so we can swap the import-time ceiling in place.
+    _SVC = [r for r in src.service.app.routes
+            if getattr(r, "path", "") == "/tenants/{tenant_id}/authorize_action"][0].endpoint.__globals__
+    prev = os.environ.get("RATHNONE_MAX_SETTLEMENT_VALUE_WEI")
     os.environ["RATHNONE_MAX_SETTLEMENT_VALUE_WEI"] = "50"
-    # Force a clean re-import so the env knob is read at import time.
-    for m in list(sys.modules):
-        if m.startswith("src.service"):
-            del sys.modules[m]
+    old_ceiling = _SVC["_MAX_VALUE_WEI"]
+    _SVC["_MAX_VALUE_WEI"] = 50
     try:
-        appmod = importlib.import_module("src.service.app")
-        importlib.reload(appmod)
-        appmod._registry._tenants.clear(); appmod._meters.clear()
-        appmod._breaker.resume(); appmod._clock._t = 0
-        c = TestClient(appmod.app)
+        _registry._tenants.clear(); _meters.clear()
+        _breaker.resume(); _clock._t = 0
+        c = TestClient(app)
         tid = c.post("/tenants", json={"aum": 5_000_000.0, "live": True}).json()["tenant_id"]
-        r = c.post(f"/tenants/{tid}/execute_live", json={
-            "request_id": "x", "capability": "rathnone.chain_settle",
-            "action_descriptor": "settle",
-            "payload": {"to": "0x" + "ab" * 20, "value": "100", "nonce": 1}})
+        # notional = quantity * price_limit = 100 * 1 = 100 wei > ceiling 50
+        r = c.post(f"/tenants/{tid}/authorize_action", json={
+            "action": {"action_id": "over", "actor": "a",
+                        "capability": "rathnone.chain_settle", "side": "settle",
+                        "destination": "0x" + "ab" * 20, "quantity": 100.0,
+                        "price_limit": 1.0, "currency": "wei",
+                        "settlement_asset": "wei", "nonce": 1},
+            "denylist": []})
         assert r.status_code == 403, r.text
         assert "exceeds" in r.json()["detail"]
     finally:
-        os.environ.pop("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", None)
-        for m in list(sys.modules):
-            if m.startswith("src.service"):
-                del sys.modules[m]
-        appmod = importlib.import_module("src.service.app")
-        importlib.reload(appmod)
+        if prev is None:
+            os.environ.pop("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", None)
+        else:
+            os.environ["RATHNONE_MAX_SETTLEMENT_VALUE_WEI"] = prev
+        _SVC["_MAX_VALUE_WEI"] = old_ceiling
