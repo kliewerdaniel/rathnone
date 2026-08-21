@@ -59,17 +59,29 @@ class CorroborationLayer:
 
     Disabled by default. When enabled it demands independent corroboration for the
     action's economic claims; any unverifiable claim => BLOCKED.
+
+    ADR 24: price corroboration is supplied as a set of NAMED, independently-originated
+    sources (``price_sources: dict[source_id, float]``) rather than an anonymous list of
+    quotes. Quorum is satisfied only by *distinct sources* — two quotes from the same
+    feed (or two entries that share a source id) count ONCE. This closes fork F7's
+    weakest point: previously a single feed reporting twice satisfied quorum=2. Sources
+    are still locally-configured values (no network egress by default), so the
+    "no egress by default" principle holds; ADR 24 only makes the *independence* of the
+    quoted evidence real rather than assumed.
     """
 
     def __init__(self, *,
                  enabled: bool = False,
                  instrument_master: Optional[set[str]] = None,
                  feeds: Optional[dict[str, list[float]]] = None,
+                 price_sources: Optional[dict[str, dict[str, float]]] = None,
                  price_band_bps: int = 50,
                  quorum: int = 2):
         self.enabled = enabled
         self.instrument_master = instrument_master or set()
         self._feeds = feeds or {}
+        # ADR 24: price_sources[source_id][instrument] = quote (named, distinct origins)
+        self._price_sources = price_sources or {}
         self.price_band_bps = price_band_bps
         self.quorum = quorum
 
@@ -145,24 +157,43 @@ class CorroborationLayer:
                 f"instrument '{action.instrument}' not in reference master",
                 {"instrument": action.instrument}))
 
-        # --- 2. PRICE_QUOTE (>= quorum independent feeds, within band) --------
+        # --- 2. PRICE_QUOTE (>= quorum DISTINCT sources, within band) --------
         checks += 1
-        quotes = self._feeds.get(action.instrument, [])
-        if quotes:
-            if len(quotes) < self.quorum:
+        # ADR 24: gather quotes keyed by their ORIGIN. A source is identified by
+        # its source id; two quotes that share an id (or a legacy anonymous feed's
+        # repeated values) count as ONE. Quorum is over distinct origins only.
+        # Back-compat: a legacy ``feeds`` entry provides a single anonymous source
+        # ("feed") for the instrument — it can satisfy quorum only if quorum==1.
+        quotes_by_source: dict[str, float] = {}
+        if action.instrument in self._feeds:
+            quotes = self._feeds[action.instrument]
+            # An anonymous feed list is treated as one source carrying the median
+            # of its entries (it cannot supply more than one distinct origin).
+            if quotes:
+                quotes_by_source["feed"] = self._median(quotes)
+        for src_id, per_src in self._price_sources.items():
+            if action.instrument in per_src:
+                quotes_by_source[src_id] = per_src[action.instrument]
+        n_distinct = len(quotes_by_source)
+        if quotes_by_source:
+            if n_distinct < self.quorum:
                 violations.append(HygieneViolation(
                     "price_unverifiable",
-                    f"only {len(quotes)} independent feed(s); require quorum {self.quorum}",
-                    {"instrument": action.instrument, "n": len(quotes)}))
+                    f"only {n_distinct} distinct price source(s); require quorum "
+                    f"{self.quorum}",
+                    {"instrument": action.instrument,
+                     "n_sources": n_distinct,
+                     "sources": sorted(quotes_by_source.keys())}))
             else:
-                mid = self._median(quotes)
+                mid = self._median(list(quotes_by_source.values()))
                 band = mid * self.price_band_bps / 10_000.0
                 lo, hi = mid - band, mid + band
                 provenance.append({"claim": "PRICE_QUOTE",
                                    "instrument": action.instrument,
                                    "asserted": action.price_limit,
                                    "corroborated_mid": mid, "band": band,
-                                   "n_feeds": len(quotes)})
+                                   "n_sources": n_distinct,
+                                   "sources": sorted(quotes_by_source.keys())})
                 if not (lo <= float(action.price_limit) <= hi):
                     violations.append(HygieneViolation(
                         "price_out_of_band",
@@ -170,10 +201,10 @@ class CorroborationLayer:
                         f"[{lo}, {hi}] (mid {mid}, band {self.price_band_bps}bps)",
                         {"asserted": action.price_limit, "lo": lo, "hi": hi}))
         else:
-            # No feed configured for this instrument => fail-closed.
+            # No source configured for this instrument => fail-closed.
             violations.append(HygieneViolation(
                 "price_unverifiable",
-                f"no independent price feed for instrument '{action.instrument}'",
+                f"no independent price source for instrument '{action.instrument}'",
                 {"instrument": action.instrument}))
 
         # --- 3. DESTINATION_OWNERSHIP (pre-registered allowlist) --------------

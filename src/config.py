@@ -158,6 +158,65 @@ def risk_velocity_max_per_window() -> int:
     return _int_env("RATHNONE_RISK_VELOCITY", 1000)
 
 
+# ---------------------------------------------------------------------------
+# v3 Epistemic-hygiene corroboration sources (ADR 24, fail-closed env knobs)
+# ---------------------------------------------------------------------------
+# ADR 24 makes fork F7's "N=2 independent feeds" REAL: quorum is satisfied only
+# by DISTINCT, independently-originated sources. These are still locally-configured
+# values (no network egress by default — the "no egress by default" principle
+# holds). A deployment lists each source under its own id; two quotes sharing an
+# id count once. Missing/malformed => fail-closed (raises) rather than silently
+# trusting a single source.
+
+def hygiene_enabled() -> bool:
+    """RATHNONE_HYGIENE_ENABLED: opt-in knowledge-poisoning gate (default off)."""
+    return _getenv("RATHNONE_HYGIENE_ENABLED") == "1"
+
+
+def hygiene_price_band_bps() -> int:
+    """RATHNONE_HYGIENE_BAND_BPS: allowed price deviation band (default 50)."""
+    return _int_env("RATHNONE_HYGIENE_BAND_BPS", 50)
+
+
+def hygiene_quorum() -> int:
+    """RATHNONE_HYGIENE_QUORUM: min DISTINCT price sources (default 2, F7)."""
+    v = _int_env("RATHNONE_HYGIENE_QUORUM", 2)
+    if v < 1:
+        raise ValueError(f"RATHNONE_HYGIENE_QUORUM must be >= 1, got {v}")
+    return v
+
+
+def hygiene_price_sources() -> dict[str, dict[str, float]]:
+    """RATHNONE_HYGIENE_PRICE_SOURCES: JSON {source_id: {INSTRUMENT: price}}.
+
+    Each top-level key is a DISTINCT origin; quorum counts distinct keys, not
+    repeated values. Unset => empty (so hygiene BLOCKS any priced claim by
+    default — fail-closed, never assumes a price is true). Malformed JSON or a
+    non-dict body => raise (fail-closed).
+    """
+    raw = _getenv("RATHNONE_HYGIENE_PRICE_SOURCES")
+    if raw is None or raw == "":
+        return {}
+    import json as _json
+    try:
+        parsed = _json.loads(raw)
+    except Exception as e:
+        raise ValueError(
+            f"RATHNONE_HYGIENE_PRICE_SOURCES must be JSON, got: {e}") from e
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            "RATHNONE_HYGIENE_PRICE_SOURCES must be a JSON object "
+            "{source_id: {instrument: price}}")
+    out: dict[str, dict[str, float]] = {}
+    for src_id, quotes in parsed.items():
+        if not isinstance(quotes, dict):
+            raise ValueError(
+                f"RATHNONE_HYGIENE_PRICE_SOURCES source {src_id!r} must map "
+                f"instrument->price")
+        out[str(src_id)] = {str(k): float(v) for k, v in quotes.items()}
+    return out
+
+
 @dataclass
 class TenantLimits:
     """Per-tenant risk bounds. Sourced from env by default; may be overridden
@@ -198,4 +257,6 @@ __all__ = [
     "risk_max_order_notional", "risk_max_position_size", "risk_max_daily_loss",
     "risk_max_portfolio_exposure", "risk_concentration_limit",
     "risk_velocity_max_per_window", "TenantLimits",
+    "hygiene_enabled", "hygiene_price_band_bps", "hygiene_quorum",
+    "hygiene_price_sources",
 ]

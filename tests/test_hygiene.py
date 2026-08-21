@@ -26,13 +26,15 @@ def _action(**kw) -> FinancialAction:
     return FinancialAction(**base)
 
 
-# Quorum=2 independent feeds clustered around 1000 (band 50bps => [995,1005]).
-_FEEDS = {"ETH": [999.0, 1000.0, 1001.0]}
+# Quorum=2 DISTINCT sources clustered around 1000 (band 50bps => [995,1005]).
+# ADR 24: each top-level key is an INDEPENDENT origin; two quotes from one feed
+# (or a repeated value) count ONCE. These are two distinct sources.
+_SOURCES = {"coinbase": {"ETH": 1000.0}, "kraken": {"ETH": 1000.0}}
 _MASTER = {"ETH", "BTC"}
 
 
 def _enabled(**kw) -> CorroborationLayer:
-    kw.setdefault("feeds", _FEEDS)
+    kw.setdefault("price_sources", _SOURCES)
     kw.setdefault("instrument_master", _MASTER)
     return CorroborationLayer(
         enabled=True, price_band_bps=50, quorum=2, **kw)
@@ -160,7 +162,8 @@ def test_pipeline_blocks_poisoned_destination_when_hygiene_enabled():
     reg = TenantRegistry()
     t = reg.create(aum=10_000_000.0)
     t.settlement_allowlist = {"0x" + "cd" * 20}  # only this dest trusted
-    layer = _enabled(feeds={"USDC": [1.0, 1.0, 1.0]}, instrument_master={"USDC"})
+    layer = _enabled(price_sources={"coinbase": {"USDC": 1.0}, "kraken": {"USDC": 1.0}},
+                    instrument_master={"USDC"})
     pipe = _pipe_with_hygiene(t, layer)
 
     a = FinancialAction(
@@ -184,7 +187,8 @@ def test_pipeline_passes_corroborated_when_hygiene_enabled():
     reg = TenantRegistry()
     t = reg.create(aum=10_000_000.0)
     t.settlement_allowlist = {"0x" + "cd" * 20}
-    layer = _enabled(feeds={"USDC": [1.0, 1.0, 1.0]}, instrument_master={"USDC"})
+    layer = _enabled(price_sources={"coinbase": {"USDC": 1.0}, "kraken": {"USDC": 1.0}},
+                    instrument_master={"USDC"})
     pipe = _pipe_with_hygiene(t, layer)
 
     a = FinancialAction(
@@ -197,3 +201,80 @@ def test_pipeline_passes_corroborated_when_hygiene_enabled():
     assert res.hygiene_ok is True
     assert res.state.value == "SETTLED"
     assert res.reconciliation == "MATCH"
+
+
+# --- ADR 24: quorum counts DISTINCT sources, not repeated values -------------
+
+def test_quorum_requires_distinct_sources_not_repeats():
+    """ADR 24: two quotes from the SAME origin must NOT satisfy quorum=2."""
+    layer = CorroborationLayer(
+        enabled=True, instrument_master=_MASTER, quorum=2,
+        price_sources={"coinbase": {"ETH": 1000.0, "ETH": 1000.0}})
+    v = layer.evaluate(_action(price_limit=1000.0),
+                       allowlist={"0x" + "cd" * 20})
+    assert v.ok is False
+    assert "price_unverifiable" in {x.code for x in v.violations}
+
+
+def test_two_distinct_sources_satisfy_quorum():
+    """ADR 24: two genuinely distinct origins => quorum met, in-band passes."""
+    layer = CorroborationLayer(
+        enabled=True, instrument_master=_MASTER, quorum=2,
+        price_sources={"coinbase": {"ETH": 1000.0}, "kraken": {"ETH": 1000.0}})
+    v = layer.evaluate(_action(price_limit=1000.0),
+                       allowlist={"0x" + "cd" * 20})
+    assert v.ok is True
+    assert any(p.get("n_sources") == 2 for p in v.provenance)
+
+
+def test_three_sources_with_one_outlier_passes():
+    """ADR 24: median over 3 distinct sources ignores one bad outlier (band)."""
+    layer = CorroborationLayer(
+        enabled=True, instrument_master=_MASTER, quorum=3,
+        price_sources={"a": {"ETH": 1000.0}, "b": {"ETH": 1000.0},
+                       "c": {"ETH": 1100.0}})
+    v = layer.evaluate(_action(price_limit=1000.0),
+                       allowlist={"0x" + "cd" * 20})
+    assert v.ok is True  # median 1000, band ±50 -> 1000 in tolerance
+
+
+def test_legacy_anonymous_feed_counts_as_single_source():
+    """Back-compat: a legacy `feeds` list is ONE origin; quorum=2 => BLOCKED."""
+    layer = CorroborationLayer(
+        enabled=True, instrument_master=_MASTER, quorum=2,
+        feeds={"ETH": [999.0, 1000.0, 1001.0]})
+    v = layer.evaluate(_action(price_limit=1000.0),
+                       allowlist={"0x" + "cd" * 20})
+    assert v.ok is False
+    assert "price_unverifiable" in {x.code for x in v.violations}
+
+
+# --- ADR 24: env-driven config readers (fail-closed) -------------------------
+
+def test_hygiene_env_sources_parsed(monkeypatch):
+    from src.config import hygiene_price_sources, hygiene_quorum
+    monkeypatch.setenv("RATHNONE_HYGIENE_PRICE_SOURCES",
+                       '{"coinbase": {"ETH": 1000.0}, "kraken": {"ETH": 1001.0}}')
+    src = hygiene_price_sources()
+    assert set(src.keys()) == {"coinbase", "kraken"}
+    assert src["coinbase"]["ETH"] == 1000.0
+
+
+def test_hygiene_env_sources_empty_by_default(monkeypatch):
+    from src.config import hygiene_price_sources
+    monkeypatch.delenv("RATHNONE_HYGIENE_PRICE_SOURCES", raising=False)
+    assert hygiene_price_sources() == {}
+
+
+def test_hygiene_env_sources_bad_json_raises(monkeypatch):
+    from src.config import hygiene_price_sources
+    monkeypatch.setenv("RATHNONE_HYGIENE_PRICE_SOURCES", "{not json")
+    with pytest.raises(ValueError):
+        hygiene_price_sources()
+
+
+def test_hygiene_env_quorum_below_one_raises(monkeypatch):
+    from src.config import hygiene_quorum
+    monkeypatch.setenv("RATHNONE_HYGIENE_QUORUM", "0")
+    with pytest.raises(ValueError):
+        hygiene_quorum()

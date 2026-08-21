@@ -43,6 +43,7 @@ from ..security.guards import (
 )
 from ..config import (
     max_settlement_value_wei, live_signing_rate_max_per_window,
+    hygiene_enabled, hygiene_price_band_bps, hygiene_quorum, hygiene_price_sources,
 )
 from .auth import require_api_key, require_key_ops_key, assert_auth_configured
 from .tenant import TenantRegistry
@@ -294,8 +295,16 @@ _L2_CHAIN_ID = int(os.environ.get("RATHNONE_L2_CHAIN_ID", "0") or "0")
 # turn it on. When enabled it demands independent corroboration for the action's
 # economic claims and fails-closed (BLOCKED) on any uncorroborated claim. Sources
 # (instrument master, price feeds) are configured out-of-band; unset => fail-closed.
+# ADR 24: sources are read from fail-closed env knobs so a deployment can configure
+# genuinely DISTINCT corroboration origins without code changes; quorum counts
+# distinct sources, not repeated values.
 _RATHNONE_HYGIENE_ENABLED = os.environ.get("RATHNONE_HYGIENE_ENABLED", "") == "1"
-_hygiene = _hyg.CorroborationLayer(enabled=_RATHNONE_HYGIENE_ENABLED)
+_hygiene = _hyg.CorroborationLayer(
+    enabled=_RATHNONE_HYGIENE_ENABLED,
+    price_band_bps=hygiene_price_band_bps(),
+    quorum=hygiene_quorum(),
+    price_sources=hygiene_price_sources() or None,
+)
 
 # v2 control-plane state (per-process singletons; deterministic authority layer).
 _operator = OperatorAuthority()          # operator's Ed25519 approval key
