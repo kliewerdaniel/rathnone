@@ -47,6 +47,11 @@ from .loader import (
     graph_from_skc_artifact,
     load_artifact,
 )
+from .compiler import (
+    QueryCompiler,
+    CompileError,
+    compile_query,
+)
 
 __all__ = [
     "Op",
@@ -73,4 +78,7 @@ __all__ = [
     "ReconcileResult",
     "graph_from_skc_artifact",
     "load_artifact",
+    "QueryCompiler",
+    "CompileError",
+    "compile_query",
 ]
