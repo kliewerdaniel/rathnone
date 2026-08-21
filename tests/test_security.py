@@ -126,35 +126,27 @@ def test_verdict_independent_of_aum():
 
 # --- env-configurable deployment knobs (V1/V4, fail-closed) ----------------
 
-def test_config_max_value_wei_fail_closed():
+def test_config_max_value_wei_fail_closed(monkeypatch):
     from src.config import (
         max_settlement_value_wei, live_signing_rate_max_per_window,
     )
     # unset / empty -> None (no ceiling)
-    orig = {}
-    for k in ("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", "RATHNONE_LIVE_RATE_MAX"):
-        orig[k] = __import__("os").environ.pop(k, None)
-    try:
-        assert max_settlement_value_wei() is None
-        assert live_signing_rate_max_per_window() == 10**12
-        # explicit valid values
-        __import__("os").environ["RATHNONE_MAX_SETTLEMENT_VALUE_WEI"] = "10"
-        assert max_settlement_value_wei() == 10
-        __import__("os").environ["RATHNONE_LIVE_RATE_MAX"] = "5"
-        assert live_signing_rate_max_per_window() == 5
-        # malformed -> raises (fail-closed, never silently unbounded)
-        __import__("os").environ["RATHNONE_MAX_SETTLEMENT_VALUE_WEI"] = "not-a-number"
-        with pytest.raises(ValueError):
-            max_settlement_value_wei()
-        __import__("os").environ["RATHNONE_MAX_SETTLEMENT_VALUE_WEI"] = "-3"
-        with pytest.raises(ValueError):
-            max_settlement_value_wei()
-    finally:
-        for k, v in orig.items():
-            if v is None:
-                __import__("os").environ.pop(k, None)
-            else:
-                __import__("os").environ[k] = v
+    monkeypatch.delenv("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", raising=False)
+    monkeypatch.delenv("RATHNONE_LIVE_RATE_MAX", raising=False)
+    assert max_settlement_value_wei() is None
+    assert live_signing_rate_max_per_window() == 10**12
+    # explicit valid values
+    monkeypatch.setenv("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", "10")
+    assert max_settlement_value_wei() == 10
+    monkeypatch.setenv("RATHNONE_LIVE_RATE_MAX", "5")
+    assert live_signing_rate_max_per_window() == 5
+    # malformed -> raises (fail-closed, never silently unbounded)
+    monkeypatch.setenv("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", "not-a-number")
+    with pytest.raises(ValueError):
+        max_settlement_value_wei()
+    monkeypatch.setenv("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", "-3")
+    with pytest.raises(ValueError):
+        max_settlement_value_wei()
 
 
 def test_service_honors_max_value_wei_env(monkeypatch):

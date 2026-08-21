@@ -9,44 +9,35 @@ machine-speed drain an unbounded live settlement path would enable.
 This test pins the invariant: a LIVE tenant (settlement_key set) with NO operator
 ceiling configured must still be refused when it tries to settle above the
 conservative 1-ETH default. Simulated/non-live tenants are unaffected.
+
+The ceiling is read at *request time* from `RATHNONE_MAX_SETTLEMENT_VALUE_WEI`
+(see `src.service.app._settlement_ceiling_wei`). No module reload is needed:
+env changes are observed live, and importing the shared `app` keeps every test
+module bound to the same gateway singletons (so this test does not corrupt the
+shared `_registry` that sibling tests depend on).
 """
 import pytest
+from fastapi.testclient import TestClient
 
 from src.config import live_default_max_settlement_wei
-
-
-def _client():
-    import importlib
-    _appmod = importlib.import_module("src.service.app")
-    importlib.reload(_appmod)
-    from fastapi.testclient import TestClient
-    return TestClient(_appmod.app)
+from src.service.app import app
 
 
 def _auth():
     return {"Authorization": "Bearer test-control-plane-key"}
 
 
-def test_live_tenant_default_ceiling_rejects_oversized_settlement(monkeypatch):
-    monkeypatch.delenv("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", raising=False)
-    monkeypatch.delenv("RATHNONE_L2_RPC_URL", raising=False)
-    c = _client()
-    cap = live_default_max_settlement_wei()  # 1 ETH in wei
-    r = c.post("/tenants", json={"aum": 1_000_000.0, "live": True},
-               headers=_auth())
-    assert r.status_code == 200, r.text
-    tid = r.json()["tenant_id"]
-
-    # value = cap + 1 wei -> must be refused by the settlement gate.
-    # (chain_settle with settlement_asset="wei" + price_limit=1 carries
-    #  value = floor(quantity) so a wei integer survives the isdigit() gate.)
-    body = {
+def _settle_payload(tid, value_wei):
+    """value carried as wei: settlement_asset='wei' + price_limit=1 makes
+    FinancialAction.as_intent compute value = floor(quantity), an integer wei
+    string that survives the settlement-gate isdigit() check."""
+    return {
         "action": {
-            "action_id": "act-1",
+            "action_id": f"act-{value_wei}",
             "tenant_id": tid,
             "capability": "rathnone.chain_settle",
             "destination": "0x" + "ab" * 20,
-            "quantity": float(cap + 1),
+            "quantity": float(value_wei),
             "settlement_asset": "wei",
             "price_limit": 1.0,
             "side": "settle",
@@ -54,7 +45,24 @@ def test_live_tenant_default_ceiling_rejects_oversized_settlement(monkeypatch):
             "instrument": "ETH",
         }
     }
-    res = c.post(f"/tenants/{tid}/authorize_action", json=body, headers=_auth())
+
+
+def test_live_tenant_default_ceiling_rejects_oversized_settlement(monkeypatch):
+    monkeypatch.delenv("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", raising=False)
+    monkeypatch.delenv("RATHNONE_L2_RPC_URL", raising=False)
+    c = TestClient(app)
+    cap = live_default_max_settlement_wei()  # 1 ETH in wei
+    r = c.post("/tenants", json={"aum": 1_000_000.0, "live": True}, headers=_auth())
+    assert r.status_code == 200, r.text
+    tid = r.json()["tenant_id"]
+
+    # value = cap + 10**9 wei (representable, unambiguously above the 1-ETH cap)
+    # must be refused by the settlement gate.
+    res = c.post(
+        f"/tenants/{tid}/authorize_action",
+        json=_settle_payload(tid, cap + 10**9),
+        headers=_auth(),
+    )
     assert res.status_code in (403, 503), res.text
     assert "ceiling" in res.json().get("detail", "").lower(), res.text
 
@@ -62,25 +70,16 @@ def test_live_tenant_default_ceiling_rejects_oversized_settlement(monkeypatch):
 def test_live_tenant_settles_at_or_below_default_ceiling(monkeypatch):
     monkeypatch.delenv("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", raising=False)
     monkeypatch.delenv("RATHNONE_L2_RPC_URL", raising=False)
-    c = _client()
+    c = TestClient(app)
     cap = live_default_max_settlement_wei()  # 1 ETH in wei
-    r = c.post("/tenants", json={"aum": 1_000_000.0, "live": True},
-               headers=_auth())
+    r = c.post("/tenants", json={"aum": 1_000_000.0, "live": True}, headers=_auth())
     tid = r.json()["tenant_id"]
 
-    body = {
-        "action": {
-            "action_id": "act-2",
-            "tenant_id": tid,
-            "capability": "rathnone.chain_settle",
-            "destination": "0x" + "ab" * 20,
-            "quantity": float(cap),  # exactly the cap -> allowed
-            "side": "settle",
-            "nonce": 1,
-            "instrument": "ETH",
-        }
-    }
-    res = c.post(f"/tenants/{tid}/authorize_action", json=body, headers=_auth())
+    res = c.post(
+        f"/tenants/{tid}/authorize_action",
+        json=_settle_payload(tid, cap),  # exactly the cap -> at-or-below
+        headers=_auth(),
+    )
     # Past the ceiling gate; verdict may still be BLOCKED by risk/hygiene, but it
     # must NOT be the settlement-ceiling rejection.
     assert res.status_code != 403 or "ceiling" not in res.json().get("detail", "").lower(), res.text
@@ -89,27 +88,15 @@ def test_live_tenant_settles_at_or_below_default_ceiling(monkeypatch):
 def test_explicit_operator_ceiling_overrides_default(monkeypatch):
     monkeypatch.setenv("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", "50")  # 50 wei
     monkeypatch.delenv("RATHNONE_L2_RPC_URL", raising=False)
-    import importlib
-    _appmod = importlib.import_module("src.service.app")
-    importlib.reload(_appmod)
-    from fastapi.testclient import TestClient
-    c = TestClient(_appmod.app)
-    r = c.post("/tenants", json={"aum": 1_000_000.0, "live": True},
-               headers=_auth())
+    c = TestClient(app)
+    r = c.post("/tenants", json={"aum": 1_000_000.0, "live": True}, headers=_auth())
     tid = r.json()["tenant_id"]
 
-    body = {
-        "action": {
-            "action_id": "act-3",
-            "tenant_id": tid,
-            "capability": "rathnone.chain_settle",
-            "destination": "0x" + "ab" * 20,
-            "quantity": 100.0,  # above the 50-wei operator ceiling
-            "side": "settle",
-            "nonce": 1,
-            "instrument": "ETH",
-        }
-    }
-    res = c.post(f"/tenants/{tid}/authorize_action", json=body, headers=_auth())
+    # 100 wei above the 50-wei operator ceiling -> refused by the ceiling.
+    res = c.post(
+        f"/tenants/{tid}/authorize_action",
+        json=_settle_payload(tid, 100),
+        headers=_auth(),
+    )
     assert res.status_code in (403, 503)
     assert "ceiling" in res.json().get("detail", "").lower(), res.text

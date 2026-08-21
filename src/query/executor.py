@@ -117,6 +117,81 @@ class EvidenceRecord:
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
+    def as_dict(self) -> dict:
+        return {
+            "included": [e.as_dict() for e in self.included],
+            "excluded": [e.as_dict() for e in self.excluded],
+            "plan": self.plan,
+            "deterministic_hash": self.deterministic_hash(),
+        }
+
+    # --- reconciliation -------------------------------------------------
+    def verify(self, *, expect_hash: str | None = None,
+               expect_included: set[str] | None = None,
+               expect_excluded: set[str] | None = None) -> "VerifyResult":
+        """Reconcile this EvidenceRecord against an expected prior.
+
+        Rathnone's discipline: an agent may ASSERT "I believe X because these
+        predicates held" — ``verify`` turns that claim into a checkable contract.
+        It fails closed (returns ok=False, never raises) on any mismatch,
+        enumerating the divergences so the reason is auditable.
+        """
+        divergences: list[str] = []
+        if expect_hash is not None and expect_hash != self.deterministic_hash():
+            divergences.append("hash mismatch")
+        if expect_included is not None:
+            got = self.included_ids
+            missing = expect_included - got
+            extra = got - expect_included
+            if missing:
+                divergences.append(f"included missing: {sorted(missing)}")
+            if extra:
+                divergences.append(f"included unexpected: {sorted(extra)}")
+        if expect_excluded is not None:
+            got = self.excluded_ids
+            missing = expect_excluded - got
+            extra = got - expect_excluded
+            if missing:
+                divergences.append(f"excluded missing: {sorted(missing)}")
+            if extra:
+                divergences.append(f"excluded unexpected: {sorted(extra)}")
+        return VerifyResult(ok=not divergences, divergences=divergences,
+                            observed_hash=self.deterministic_hash())
+
+    def reconcile_with(self, other: "EvidenceRecord") -> "ReconcileResult":
+        """Two independent runs over the (presumably same) graph must agree.
+
+        Used to detect silent evidence drift: if the same query is re-run and the
+        included set changes, something in the knowledge base moved. Surfaces the
+        symmetric difference with per-entity reasons.
+        """
+        a = self.included_ids
+        b = other.included_ids
+        only_self = sorted(a - b)
+        only_other = sorted(b - a)
+        stable = sorted(a & b)
+        return ReconcileResult(
+            stable=stable, only_self=only_self, only_other=only_other,
+            consistent=not only_self and not only_other,
+            self_hash=self.deterministic_hash(), other_hash=other.deterministic_hash())
+
+
+@dataclass
+class VerifyResult:
+    ok: bool
+    divergences: list[str]
+    observed_hash: str
+
+
+@dataclass
+class ReconcileResult:
+    stable: list[str]
+    only_self: list[str]
+    only_other: list[str]
+    consistent: bool
+    self_hash: str
+    other_hash: str
+
 
 # ---------------------------------------------------------------------------
 # Executor
@@ -319,4 +394,5 @@ class QueryExecutor:
         return False
 
 
-__all__ = ["Entity", "Edge", "KnowledgeGraph", "EvidenceRecord", "QueryExecutor"]
+__all__ = ["Entity", "Edge", "KnowledgeGraph", "EvidenceRecord",
+           "QueryExecutor", "VerifyResult", "ReconcileResult"]

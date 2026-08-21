@@ -40,6 +40,12 @@ from .executor import (
     KnowledgeGraph,
     EvidenceRecord,
     QueryExecutor,
+    VerifyResult,
+    ReconcileResult,
+)
+from .loader import (
+    graph_from_skc_artifact,
+    load_artifact,
 )
 
 __all__ = [
@@ -63,4 +69,8 @@ __all__ = [
     "KnowledgeGraph",
     "EvidenceRecord",
     "QueryExecutor",
+    "VerifyResult",
+    "ReconcileResult",
+    "graph_from_skc_artifact",
+    "load_artifact",
 ]
