@@ -16,6 +16,7 @@ only). Covers:
 import base64
 import json
 import os
+import time
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -38,11 +39,11 @@ def _pem(key: Ed25519PrivateKey) -> str:
 
 
 def _sign_cmd(key: Ed25519PrivateKey, *, verb: str, tenant_id: str = "__safety__",
-              body: bytes = b"halt", nonce: int = 0, timestamp: int = None,
+              body: bytes = b"", nonce: int = 0, timestamp: int = None,
               operator_id: str = "op-1", second_key=None,
               second_operator_id: str = "") -> OperatorCommand:
     if timestamp is None:
-        timestamp = _clock.now()
+        timestamp = int(time.time() * 1_000_000_000)  # F5: epoch-ns, matches gateway
     cmd = OperatorCommand(
         verb=verb, tenant_id=tenant_id, body_hash=body_hash_of(body),
         nonce=nonce, timestamp=timestamp, operator_id=operator_id,
@@ -108,7 +109,9 @@ def test_halt_with_valid_command_attributed():
     c = next(_client())
     op = Ed25519PrivateKey.generate()
     _SAFETY_TENANT.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
-    cmd = _sign_cmd(op, verb="halt", body=b"halt", nonce=1)
+    # F2b: the gateway binds the command to the ACTUAL request body, which for an
+    # empty POST is b"". The command must be signed over b"" to verify.
+    cmd = _sign_cmd(op, verb="halt", body=b"", nonce=1)
     r = c.post("/safety/halt", headers=_cmd_header(cmd))
     assert r.status_code == 200 and r.json()["breaker_open"] is True
     # The command is attributed in the safety audit trail (Inv 3: pubkey recorded).
@@ -121,7 +124,7 @@ def test_replayed_nonce_refused():
     c = next(_client())
     op = Ed25519PrivateKey.generate()
     _SAFETY_TENANT.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
-    cmd = _sign_cmd(op, verb="resume", body=b"resume", nonce=7)
+    cmd = _sign_cmd(op, verb="resume", body=b"", nonce=7)
     r1 = c.post("/safety/resume", headers=_cmd_header(cmd))
     assert r1.status_code == 200
     # Replay the same nonce -> refused.
@@ -134,7 +137,8 @@ def test_wrong_body_binding_refused():
     c = next(_client())
     op = Ed25519PrivateKey.generate()
     _SAFETY_TENANT.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
-    # Command signed over b"halt" but the endpoint verifies against b"resume".
+    # Command signed over a NON-empty body, but the endpoint verifies against the
+    # actual request body (b""). The mismatch must be refused (F2b binding).
     cmd = _sign_cmd(op, verb="resume", body=b"halt", nonce=3)
     r = c.post("/safety/resume", headers=_cmd_header(cmd))
     assert r.status_code == 401
@@ -145,7 +149,7 @@ def test_bad_signature_refused():
     c = next(_client())
     op = Ed25519PrivateKey.generate()
     _SAFETY_TENANT.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
-    cmd = _sign_cmd(op, verb="halt", body=b"halt", nonce=4)
+    cmd = _sign_cmd(op, verb="halt", body=b"", nonce=4)
     cmd.sig = "deadbeef"  # corrupt signature
     r = c.post("/safety/halt", headers=_cmd_header(cmd))
     assert r.status_code == 401
@@ -155,30 +159,33 @@ def test_bad_signature_refused():
 # --- unit-level: OperatorCommand / verify_command fail-closed ----------------
 
 def test_verify_command_unit():
+    # F5: commands are signed in the epoch-nanosecond domain (int(time.time()*1e9)),
+    # so verify against an epoch-ns `now` (not the monotonic _clock).
+    now_ns = int(time.time() * 1_000_000_000)
     op = Ed25519PrivateKey.generate()
-    cmd = _sign_cmd(op, verb="halt", body=b"halt", nonce=0)
+    cmd = _sign_cmd(op, verb="halt", body=b"", nonce=0)
     ok, _ = verify_command(
-        cmd, body=b"halt", allowlist_pems=[_pem(op)],
-        used_nonces=set(), now=_clock.now())
+        cmd, body=b"", allowlist_pems=[_pem(op)],
+        used_nonces=set(), now=now_ns)
     assert ok is True
     # wrong body
     ok2, why = verify_command(
         cmd, body=b"different", allowlist_pems=[_pem(op)],
-        used_nonces=set(), now=_clock.now())
+        used_nonces=set(), now=now_ns)
     assert ok2 is False and "body_hash" in why
     # replay
     ok3, why3 = verify_command(
-        cmd, body=b"halt", allowlist_pems=[_pem(op)],
-        used_nonces={0}, now=_clock.now())
+        cmd, body=b"", allowlist_pems=[_pem(op)],
+        used_nonces={0}, now=now_ns)
     assert ok3 is False and "replay" in why3
     # no allowlist
     ok4, why4 = verify_command(
-        cmd, body=b"halt", allowlist_pems=[], used_nonces=set(), now=_clock.now())
+        cmd, body=b"", allowlist_pems=[], used_nonces=set(), now=now_ns)
     assert ok4 is False and "allowlist" in why4
     # expired timestamp (signed ~61s before the verification time)
-    stale = _sign_cmd(op, verb="halt", body=b"halt", nonce=1,
-                     timestamp=(9_999 - 61_000_000_000))
+    stale = _sign_cmd(op, verb="halt", body=b"", nonce=1,
+                     timestamp=(now_ns - 61_000_000_000))
     ok5, why5 = verify_command(
-        stale, body=b"halt", allowlist_pems=[_pem(op)],
-        used_nonces=set(), now=9_999, max_age_s=60)
+        stale, body=b"", allowlist_pems=[_pem(op)],
+        used_nonces=set(), now=now_ns, max_age_s=60)
     assert ok5 is False and "timestamp" in why5

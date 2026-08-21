@@ -339,24 +339,40 @@ class OperatorKeyRing:
 
 def verify_command(cmd: "OperatorCommand", *, body: bytes,
                    allowlist_pems: list[str], used_nonces: set[int],
-                   now: int, max_age_s: int = 60) -> tuple[bool, Optional[str]]:
+                   now: int, max_age_s: int = 60,
+                   scope: Optional[str] = None) -> tuple[bool, Optional[str]]:
     """Fail-closed gate for a signed operator command (ADR 19).
 
     Returns (ok, reason). Refuses when:
       - the command does not bind to this exact request body (body_hash mismatch),
+      - the command's ``tenant_id`` does not match the authority scope it is
+        presented against (F2: the field was previously signed but never
+        checked, so a safety-scope command could be replayed against a tenant or
+        vice-versa),
       - the signature fails against every key on the operator allowlist,
       - the nonce was already used (replay),
       - or the timestamp is outside the acceptance window.
+
+    Timestamp domain (F5): commands carry an **epoch-nanosecond** stamp
+    (``int(time.time() * 1e9)``), the same across the signing tool and the
+    gateway, so the acceptance window is meaningful across separate processes.
+    ``now`` must be supplied in the same epoch-ns domain by the caller.
     """
     if not allowlist_pems:
         return False, "no operator allowlist configured (fail-closed)"
+    # F2: the signed tenant_id is the authority scope this command is valid for.
+    # A command minted for one scope (e.g. a tenant) must never satisfy the gate
+    # for a different scope (e.g. the service-global safety verb).
+    if scope is not None and cmd.tenant_id != scope:
+        return False, (f"command tenant_id '{cmd.tenant_id}' does not match the "
+                       f"authority scope '{scope}'")
     if cmd.body_hash != body_hash_of(body):
         return False, "command body_hash does not match the request body"
     if cmd.nonce in used_nonces:
         return False, f"command nonce {cmd.nonce} already used (replay)"
-    # ``now`` and ``cmd.timestamp`` are both nanosecond-resolution (the app clock
-    # is monotonic_ns in production, an injectable ns counter in tests), so the
-    # acceptance window must be expressed in nanoseconds.
+    # ``now`` and ``cmd.timestamp`` are both EPOCH-nanosecond resolution (the
+    # signing tool and the gateway both use ``int(time.time() * 1e9)``), so the
+    # acceptance window is expressed in nanoseconds.
     max_age_ns = max_age_s * 1_000_000_000
     if cmd.timestamp < 0 or abs(now - cmd.timestamp) > max_age_ns:
         return False, f"command timestamp {cmd.timestamp} outside acceptance window"

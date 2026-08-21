@@ -96,7 +96,10 @@ def test_x_api_key_header_accepted():
 
 # --- the unified authorization path does NOT require the control-plane key --
 
-def test_authorize_action_is_open_to_tenant_callers():
+def test_authorize_action_requires_control_plane_key():
+    # F3: the live-settlement authorization verb is now gated by the control-plane
+    # key (same gate as provisioning/reads). An unauthenticated caller gets 401; a
+    # caller holding the key runs the frozen pipeline and gets a signature on AUTO.
     c = _client()
     tid = c.post("/tenants", json={"aum": 1_000_000.0, "live": True},
                  headers=_HEADERS).json()["tenant_id"]
@@ -107,8 +110,16 @@ def test_authorize_action_is_open_to_tenant_callers():
                     "price_limit": 1.0, "currency": "wei",
                     "settlement_asset": "wei", "nonce": 1},
         "denylist": []})
-    assert r.status_code == 200, r.text
-    assert r.json()["live_record"]["signature"]
+    assert r.status_code == 401, r.text
+    r2 = c.post(f"/tenants/{tid}/authorize_action", json={
+        "action": {"action_id": "p0", "actor": "a",
+                    "capability": "rathnone.chain_settle", "side": "settle",
+                    "destination": "0x" + "ab" * 20, "quantity": 1.0,
+                    "price_limit": 1.0, "currency": "wei",
+                    "settlement_asset": "wei", "nonce": 1},
+        "denylist": []}, headers=_HEADERS)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["live_record"]["signature"]
 
 
 # --- deleted bypass endpoints -----------------------------------------------

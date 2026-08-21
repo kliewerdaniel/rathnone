@@ -135,9 +135,14 @@ def test_destination_override_requires_second_operator():
     assert res1.verdict == "BLOCKED"
     assert "2-of-2" in (res1.blocked_reason or "")
 
-    # Two operators: released.
+    # Two operators: released. To fully clear the action EVERY blocking hygiene
+    # code must be in the released set (F1: partial release stays BLOCKED). The
+    # action is blocked on both destination_untrusted (2-of-2) and
+    # price_unverifiable, so the dual downgrade releases both — and because
+    # destination_untrusted requires a second sig, the dual signature supplies it.
     dual = layer.sign_downgrade(a, operator_key=o1, second_key=o2,
-                                violation_ids=["destination_untrusted"],
+                                violation_ids=["destination_untrusted",
+                                                "price_unverifiable"],
                                 reason="benign dest", nonce=3,
                                 second_operator_id="op-2")
     res2 = pipe.run(a, denylist=(), downgrade=dual)

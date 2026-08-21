@@ -17,6 +17,7 @@ Covers:
 import base64
 import json
 import os
+import time
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -62,10 +63,12 @@ def _canonical_body(action: dict, **extra) -> bytes:
 
 def _sign_authorize(key: Ed25519PrivateKey, *, tid: str, body: bytes,
                     nonce: int = 0, operator_id: str = "op-1") -> OperatorCommand:
+    # F5: timestamp in the epoch-nanosecond domain (int(time.time()*1e9)) so it
+    # matches the gateway's _command_clock verification domain across processes.
     cmd = OperatorCommand(
         verb="authorize", tenant_id=tid, body_hash=body_hash_of(body),
-        nonce=nonce, timestamp=_clock.now(), operator_id=operator_id,
-        pubkey_pem=_pem(key),
+        nonce=nonce, timestamp=int(time.time() * 1_000_000_000),
+        operator_id=operator_id, pubkey_pem=_pem(key),
     )
     cmd.sig = key.sign(cmd.canonical_bytes()).hex()
     return cmd

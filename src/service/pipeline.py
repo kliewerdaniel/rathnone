@@ -181,10 +181,49 @@ class AuthorizationPipeline:
                 if verdict == "AUTO":
                     verdict = "HUMAN"
                     res.verdict = "HUMAN"
-                res.hygiene_ok = True
-                res.hygiene_violations = []  # released by signed operator override
-                res.downgraded = True
+                # ADR18-FIX (F1): release ONLY the violations the operator actually
+                # signed over. The downgrade record already fail-closed the check
+                # that every released id was among the action's real violations, so
+                # released_ids ⊆ actual_violations. We MUST NOT clear the whole set:
+                # a partial release (e.g. releasing price_unverifiable while the
+                # action was ALSO blocked on the 2-of-2 destination_untrusted code)
+                # must leave the unreleased violations intact — narrowing-only
+                # would otherwise let a single operator clear a 2-of-2 anti-theft
+                # override via a benign subset release.
+                released_codes = set(downgrade.violation_ids)
+                remaining = [
+                    v for v in res.hygiene_violations
+                    if v.get("code") not in released_codes
+                ]
+                # Released violations are recorded for the audit ledger.
                 res.downgrade_violations = list(downgrade.violation_ids)
+                if not remaining:
+                    # Every hygiene violation was explicitly released -> cleared.
+                    res.hygiene_ok = True
+                    res.hygiene_violations = []
+                    res.downgraded = True
+                else:
+                    # F1 (ADR18-FIX): a PARTIAL release is NOT a clearance. If any
+                    # blocking violation remains unreleased — including the 2-of-2
+                    # DESTINATION_OWNERSHIP codes that require a SECOND operator — the
+                    # action stays BLOCKED on the unreleased set. Splitting the release
+                    # (release a benign code, leave the anti-theft code) was the bypass;
+                    # the only sanctioned widener now is a downgrade whose released set
+                    # covers EVERY blocking violation. This keeps narrowing-only and
+                    # preserves the 2-of-2 second-operator requirement.
+                    res.hygiene_ok = False
+                    res.hygiene_violations = remaining
+                    res.downgraded = True
+                    res.verdict = "BLOCKED"
+                    res.blocked_reason = (
+                        "hygiene downgrade partial: "
+                        + ", ".join(v.get("code") for v in remaining)
+                        + " still unverified")
+                    self._emit(action, ActionState.REJECTED, "REJECTION", ah,
+                               {"reason": "hygiene partial release",
+                                "unreleased": [v.get("code") for v in remaining]})
+                    res.state = ActionState.REJECTED
+                    return res
             else:
                 res.verdict = "BLOCKED"
                 res.blocked_reason = f"hygiene downgrade refused: {why}"

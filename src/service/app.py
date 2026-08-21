@@ -63,13 +63,35 @@ class _SafetyOperatorScope:
     def record_command(self, *, verb: str, operator_id: str,
                        operator_pubkey_pem: str, nonce: int,
                        reason: str = "") -> None:
-        # The service-wide safety audit trail lives in the in-memory registry;
-        # here we only need a hook so _require_command's call shape is uniform.
+        # The service-wide safety audit trail lives in the in-memory registry for
+        # immediate visibility, AND (F4) is written through to the durable
+        # operator-key store's safety scope when one is configured, so the
+        # who-halted / who-resumed trail survives a process restart (Inv 3:
+        # key-free replay depends on the binding still existing). The store holds
+        # the SAME OperatorKeyEntry data model keyed by (scope, key_id); we reuse
+        # it for the safety-command audit as a small, append-only event log.
         _safety_audit.append({
             "event": "operator_command", "verb": verb,
             "operator_id": operator_id, "operator_pubkey_pem": operator_pubkey_pem,
             "nonce": nonce, "reason": reason,
         })
+        ks = _key_store_singleton()
+        if ks is not None:
+            try:
+                ks.append_safety_audit({
+                    "event": "operator_command", "verb": verb,
+                    "operator_id": operator_id,
+                    "operator_pubkey_pem": operator_pubkey_pem,
+                    "nonce": nonce, "reason": reason,
+                    "ts": int(time.time()),
+                })
+            except Exception:
+                # Fail-closed enough: the in-memory trail is intact and the live
+                # verdict has already been denied/allowed by the gate above. A
+                # store write failure must not crash the verb, but it IS logged
+                # for the operator (the durable trail is best-effort on top of
+                # the authoritative in-memory record).
+                pass
 
 
 _SAFETY_SCOPE = "safety"  # ADR 23: durable-store scope id for the global safety keyring
@@ -274,6 +296,12 @@ _meters: dict[str, MeteringLedger] = {}
 # (antidote to V1). Both are environment-configurable and fail-closed: a malformed
 # env value raises at import time rather than silently disabling the guard.
 _clock = Clock(monotonic=True)
+# F5: a SEPARATE clock for operator-command timestamp verification. It returns
+# wall-clock epoch-nanoseconds (int(time.time()*1e9)) — the same domain the
+# out-of-band signing tool uses — so a command minted in one process is accepted
+# by the gateway in another within the acceptance window. (The monotonic `_clock`
+# above is process-relative and only suitable for intra-process liveness.)
+_command_clock = Clock(epoch_ns=True)
 _breaker = CircuitBreaker(clock=_clock)
 # Deployment knobs (fail-closed; see src/config.py):
 #   RATHNONE_MAX_SETTLEMENT_VALUE_WEI  -> refuse transfers above this many wei
@@ -391,7 +419,8 @@ def _require_command(request: "object", *, verb: str, tenant_id: str,
         raise HTTPException(status_code=400, detail="malformed operator command")
     ok, why = verify_command(
         cmd, body=body, allowlist_pems=allowlist,
-        used_nonces=tenant._used_command_nonces, now=_clock.now())
+        used_nonces=tenant._used_command_nonces, now=_command_clock.now(),
+        scope=tenant_id)
     if not ok:
         raise HTTPException(status_code=401, detail=f"operator command refused: {why}")
     tenant._used_command_nonces.add(cmd.nonce)
@@ -424,29 +453,33 @@ def safety_state():
 
 
 @app.post("/safety/halt")
-def safety_halt(request: Request, _: None = Depends(require_api_key)):
+async def safety_halt(request: Request, _: None = Depends(require_api_key)):
     """V4: trip the circuit breaker. Stops live signing/execution immediately,
     independently of the frozen decide(). This is the antidote to the immutable
     cage: the operator can always halt the autonomous loop.
 
     ADR 19: when the global operator allowlist is configured, the command must be
     a signed OperatorCommand (attributed + replay-guarded). Otherwise the ADR 17
-    static control-plane key remains the sole gate.
+    static control-plane key remains the sole gate. F2b: the command is bound to
+    the ACTUAL request body (the raw POST bytes), not a hardcoded literal, so the
+    signed-command gate enforces real request binding rather than a constant.
     """
+    raw = await request.body()
     _require_command(request, verb="halt", tenant_id="__safety__",
-                     body=b"halt", tenant=_SAFETY_TENANT)
+                     body=raw, tenant=_SAFETY_TENANT)
     _breaker.halt()
     return {"breaker_open": True}
 
 
 @app.post("/safety/resume")
-def safety_resume(request: Request, _: None = Depends(require_api_key)):
+async def safety_resume(request: Request, _: None = Depends(require_api_key)):
     """V4: clear the circuit breaker. Operator action only.
 
     ADR 19: signed OperatorCommand required when the global operator allowlist is
     configured (see safety_halt)."""
+    raw = await request.body()
     _require_command(request, verb="resume", tenant_id="__safety__",
-                     body=b"resume", tenant=_SAFETY_TENANT)
+                     body=raw, tenant=_SAFETY_TENANT)
     _breaker.resume()
     return {"breaker_open": False}
 
@@ -478,7 +511,8 @@ def tenant_info(tenant_id: str, _: None = Depends(require_api_key)):
 
 
 @app.post("/tenants/{tenant_id}/authorize")
-def authorize(tenant_id: str, body: _AuthorizeIn):
+def authorize(tenant_id: str, body: _AuthorizeIn,
+              _: None = Depends(require_api_key)):
     t = _get_tenant(tenant_id)
     # V1: advisory_evidence is sanitized before recording. It NEVER reaches
     # fleet.epistemic.decide() (the translator drops it); this is defense-in-depth
@@ -526,7 +560,9 @@ class _AuthorizeActionIn(BaseModel):
 
 
 @app.post("/tenants/{tenant_id}/authorize_action")
-def authorize_action(tenant_id: str, body: _AuthorizeActionIn, request: Request):
+async def authorize_action(tenant_id: str, body: _AuthorizeActionIn,
+                           request: Request,
+                           _: None = Depends(require_api_key)):
     """v2 control-plane endpoint: run the FULL pipeline over a FinancialAction.
 
     Order: epistemic (frozen spine) -> policy -> risk (narrowing) -> HUMAN

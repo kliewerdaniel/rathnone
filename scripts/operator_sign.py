@@ -50,7 +50,19 @@ def _load_key(path: str) -> "Ed25519PrivateKey":
 def _body_bytes(payload: dict) -> bytes:
     # Must match the gateway's canonicalization in app.authorize_action exactly:
     # json.dumps(body.model_dump(), sort_keys=True, separators=(",", ":")).
-    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    # The gateway's _AuthorizeActionIn model_dump() ALWAYS includes the optional
+    # fields (approval, downgrade, require_human_approval, denylist) — with None
+    # for any that are omitted — so we must expand the same full set here, never
+    # a partial dict. Failing to do so (F5) makes the body_hash diverge and the
+    # gateway rejects the command.
+    canonical = {
+        "action": payload.get("action"),
+        "approval": payload.get("approval"),
+        "downgrade": payload.get("downgrade"),
+        "require_human_approval": payload.get("require_human_approval", False),
+        "denylist": payload.get("denylist", ()),
+    }
+    return json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
 
 
 def main() -> int:
@@ -86,7 +98,12 @@ def main() -> int:
         payload["denylist"] = tuple(args.denylist.split(","))
 
     body = _body_bytes(payload)
-    timestamp = time.monotonic_ns() if hasattr(time, "monotonic_ns") else int(time.time() * 1e9)
+    # F5: command timestamp uses wall-clock EPOCH nanoseconds
+    # (int(time.time() * 1e9)) — the same domain the gateway verifies against
+    # (its _command_clock). Using monotonic_ns() (host-uptime relative) made the
+    # stamp diverge from the gateway's clock by ~minutes, always outside the
+    # acceptance window, so every tool-produced command was refused.
+    timestamp = int(time.time() * 1_000_000_000)
     cmd = OperatorCommand(
         verb="authorize", tenant_id=args.tenant,
         body_hash=body_hash_of(body), nonce=args.nonce,

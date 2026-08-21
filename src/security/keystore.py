@@ -60,6 +60,21 @@ class DurableOperatorKeyStore:
                    PRIMARY KEY (scope, key_id)
                )"""
         )
+        # F4: append-only audit of safety-scope operator commands (halt/resume),
+        # so the who-halted / who-resumed trail survives a process restart and is
+        # not lost when the in-memory _safety_audit is cleared. Key-free
+        # verifiable: each row records the operator pubkey pem alongside the event.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS safety_audit (
+                   seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+                   verb     TEXT NOT NULL,
+                   operator_id TEXT NOT NULL,
+                   operator_pubkey_pem TEXT NOT NULL,
+                   nonce    INTEGER NOT NULL,
+                   reason   TEXT NOT NULL DEFAULT '',
+                   ts       INTEGER NOT NULL
+               )"""
+        )
         self._conn.commit()
 
     # --- read side ----------------------------------------------------------
@@ -147,6 +162,36 @@ class DurableOperatorKeyStore:
         except Exception:
             self._conn.execute("ROLLBACK")
             raise
+
+    def append_safety_audit(self, event: dict) -> None:
+        """F4: append one safety-scope operator-command event (durable trail).
+
+        Written through immediately so the halt/resume attribution survives a
+        process restart. Fail-closed: raises on any store error (the caller
+        treats durability as best-effort on top of the authoritative in-memory
+        record, but a write failure is surfaced rather than silently swallowed).
+        """
+        self._conn.execute(
+            "INSERT INTO safety_audit "
+            "(verb, operator_id, operator_pubkey_pem, nonce, reason, ts) "
+            "VALUES (?,?,?,?,?,?)",
+            (event.get("verb", ""), event.get("operator_id", ""),
+             event.get("operator_pubkey_pem", ""), event.get("nonce", 0),
+             event.get("reason", ""), event.get("ts", 0)),
+        )
+        self._conn.commit()
+
+    def load_safety_audit(self) -> list[dict]:
+        """Return the full (durable) safety-command audit trail, oldest first."""
+        cur = self._conn.execute(
+            "SELECT seq, verb, operator_id, operator_pubkey_pem, nonce, reason, ts "
+            "FROM safety_audit ORDER BY seq ASC"
+        )
+        return [
+            {"seq": r[0], "verb": r[1], "operator_id": r[2],
+             "operator_pubkey_pem": r[3], "nonce": r[4], "reason": r[5], "ts": r[6]}
+            for r in cur.fetchall()
+        ]
 
     def close(self) -> None:
         self._conn.close()

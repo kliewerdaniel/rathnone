@@ -118,36 +118,58 @@ def validate_order(order: dict) -> None:
 
 @dataclass
 class Clock:
-    """Injectable monotonic clock for staleness / velocity guards (testable).
+    """Injectable clock for staleness / velocity guards (testable).
 
-    Default (manual) mode holds a settable ``_t`` so tests get a deterministic,
-    controllable timeline. With ``monotonic=True`` the clock advances on real
-    wall-clock time (``time.monotonic_ns``) — the production mode so staleness
-    guards actually progress and cannot be frozen by a process that never calls
-    ``advance``. Both modes expose the same ``now()`` surface; the pipeline only
-    ever reads ``now()``.
+    Two real modes plus a manual test mode:
+      - manual (default): a settable ``_t`` so tests get a deterministic,
+        controllable timeline (``advance``).
+      - monotonic: nanoseconds since construction (``time.monotonic_ns``). Used
+        by the velocity/staleness guards inside the process; never crosses a
+        process boundary, so it is only for *intra-process* liveness.
+      - epoch_ns (F5): wall-clock ``int(time.time() * 1e9)``. This is the SAME
+        across separate processes, so a signing tool in one process and the
+        gateway in another agree on the timestamp domain. Operator commands carry
+        an epoch-ns stamp and are verified against this clock's ``now()``.
+
+    All modes expose the same ``now()`` surface; callers must use the mode that
+    matches the domain they compare against.
     """
 
     _t: int = 0
     monotonic: bool = False
+    epoch_ns: bool = False
     _epoch_ns: int = 0
+    _mono_epoch: int = 0
 
     def __post_init__(self):
         if self.monotonic:
-            self._epoch_ns = time.monotonic_ns()
+            self._mono_epoch = time.monotonic_ns()
+        if self.epoch_ns:
+            self._epoch_ns = _now_epoch_ns()
 
     def now(self) -> int:
         if self.monotonic:
             # nanoseconds since construction, capped to a 64-bit positive int
-            return min(time.monotonic_ns() - self._epoch_ns, 2**63 - 1)
+            return min(time.monotonic_ns() - self._mono_epoch, 2**63 - 1)
+        if self.epoch_ns:
+            return _now_epoch_ns()
         return self._t
 
     def advance(self, dt: int = 1) -> None:
-        if self.monotonic:
-            raise ValueError("advance() is unavailable in monotonic mode")
+        if self.monotonic or self.epoch_ns:
+            raise ValueError("advance() is unavailable in real-clock modes")
         if dt < 0:
             raise ValueError("clock cannot go backwards")
         self._t += dt
+
+
+def _now_epoch_ns() -> int:
+    """Wall-clock timestamp in nanoseconds, shared across processes (F5).
+
+    A signing tool and the gateway both derive command timestamps/now from this
+    same epoch, so the acceptance window is meaningful cross-process.
+    """
+    return int(time.time() * 1_000_000_000)
 
 
 class CircuitBreaker:
