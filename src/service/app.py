@@ -43,6 +43,7 @@ from ..security.guards import (
 )
 from ..config import (
     max_settlement_value_wei, live_signing_rate_max_per_window,
+    live_default_max_settlement_wei,
     hygiene_enabled, hygiene_price_band_bps, hygiene_quorum, hygiene_price_sources,
 )
 from .auth import require_api_key, require_key_ops_key, assert_auth_configured
@@ -306,9 +307,29 @@ _breaker = CircuitBreaker(clock=_clock)
 # Deployment knobs (fail-closed; see src/config.py):
 #   RATHNONE_MAX_SETTLEMENT_VALUE_WEI  -> refuse transfers above this many wei
 #   RATHNONE_LIVE_RATE_MAX             -> max live signatures per sliding window
-_MAX_VALUE_WEI = max_settlement_value_wei()          # None = no ceiling (set in prod)
+# ADR 26: if the operator sets no explicit ceiling, a LIVE tenant is still
+# bounded by a deliberately small conservative default (1 ETH) rather than left
+# unbounded. Simulated/non-live deployments keep the None (no cap) behaviour so
+# existing dev/CI is unaffected — the cap only bites on the live settlement path.
 _velocity = VelocityGuard(clock=_clock,
                           max_per_window=live_signing_rate_max_per_window())
+
+
+def _settlement_ceiling_wei(t) -> Optional[int]:
+    """ADR 26: resolve the settlement ceiling for THIS request.
+
+    Read at request time (not import time) so an operator who flips
+    RATHNONE_MAX_SETTLEMENT_VALUE_WEI sees it take effect on the next request
+    without reloading the module. A LIVE tenant (settlement_key set) with no
+    operator ceiling is bounded by a deliberately small conservative default
+    (1 ETH) instead of being left UNBOUNDED — the exact machine-speed drain
+    the 2026 OpenAI->HuggingFace intrusion demonstrated. Simulated/non-live
+    tenants keep the None (no cap) behaviour so existing dev/CI is unaffected.
+    """
+    operator_ceiling = max_settlement_value_wei()
+    if operator_ceiling is not None:
+        return operator_ceiling
+    return live_default_max_settlement_wei() if t.settlement_key is not None else None
 
 # Real-venue deployment switch (v2 P2). With no RATHNONE_L2_RPC_URL set (the
 # default), get_venue() returns SimulatedVenue — identical to today, no egress.
@@ -628,7 +649,7 @@ async def authorize_action(tenant_id: str, body: _AuthorizeActionIn,
         t, operator=_operator, registry=_replay_registry, evidence=_evidence,
         limits=_limits, risk_engine=_risk_engine, hygiene=_hygiene,
         breaker=_breaker, velocity=_velocity, clock_now=_clock.now(),
-        max_value_wei=_MAX_VALUE_WEI,
+        max_value_wei=_settlement_ceiling_wei(t),
         venue=get_venue(t, rpc_url=_L2_RPC_URL, chain_id=_L2_CHAIN_ID))
     result = pipe.run(
         action, approval=approval, downgrade=downgrade,

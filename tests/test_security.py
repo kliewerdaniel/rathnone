@@ -157,37 +157,25 @@ def test_config_max_value_wei_fail_closed():
                 __import__("os").environ[k] = v
 
 
-def test_service_honors_max_value_wei_env():
+def test_service_honors_max_value_wei_env(monkeypatch):
     """V4: when RATHNONE_MAX_SETTLEMENT_VALUE_WEI is set, an over-ceiling
-    settlement is refused at the service layer (403), even with an AUTO verdict."""
-    import os
-    import src.service
-    # Reach the genuine service module dict (src.service.app is shadowed to the
-    # FastAPI instance) so we can swap the import-time ceiling in place.
-    _SVC = [r for r in src.service.app.routes
-            if getattr(r, "path", "") == "/tenants/{tenant_id}/authorize_action"][0].endpoint.__globals__
-    prev = os.environ.get("RATHNONE_MAX_SETTLEMENT_VALUE_WEI")
-    os.environ["RATHNONE_MAX_SETTLEMENT_VALUE_WEI"] = "50"
-    old_ceiling = _SVC["_MAX_VALUE_WEI"]
-    _SVC["_MAX_VALUE_WEI"] = 50
-    try:
-        _registry._tenants.clear(); _meters.clear()
-        _breaker.resume(); _clock._t = 0
-        c = TestClient(app)
-        tid = c.post("/tenants", json={"aum": 5_000_000.0, "live": True}).json()["tenant_id"]
-        # notional = quantity * price_limit = 100 * 1 = 100 wei > ceiling 50
-        r = c.post(f"/tenants/{tid}/authorize_action", json={
-            "action": {"action_id": "over", "actor": "a",
-                        "capability": "rathnone.chain_settle", "side": "settle",
-                        "destination": "0x" + "ab" * 20, "quantity": 100.0,
-                        "price_limit": 1.0, "currency": "wei",
-                        "settlement_asset": "wei", "nonce": 1},
-            "denylist": []})
-        assert r.status_code == 403, r.text
-        assert "exceeds" in r.json()["detail"]
-    finally:
-        if prev is None:
-            os.environ.pop("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", None)
-        else:
-            os.environ["RATHNONE_MAX_SETTLEMENT_VALUE_WEI"] = prev
-        _SVC["_MAX_VALUE_WEI"] = old_ceiling
+    settlement is refused at the service layer (403), even with an AUTO verdict.
+
+    The ceiling is resolved at REQUEST TIME (app._settlement_ceiling_wei reads
+    the env per call), so we set the env directly — no import-time global patch.
+    """
+    monkeypatch.setenv("RATHNONE_MAX_SETTLEMENT_VALUE_WEI", "50")
+    _registry._tenants.clear(); _meters.clear()
+    _breaker.resume(); _clock._t = 0
+    c = TestClient(app)
+    tid = c.post("/tenants", json={"aum": 5_000_000.0, "live": True}).json()["tenant_id"]
+    # notional = quantity * price_limit = 100 * 1 = 100 wei > ceiling 50
+    r = c.post(f"/tenants/{tid}/authorize_action", json={
+        "action": {"action_id": "over", "actor": "a",
+                    "capability": "rathnone.chain_settle", "side": "settle",
+                    "destination": "0x" + "ab" * 20, "quantity": 100.0,
+                    "price_limit": 1.0, "currency": "wei",
+                    "settlement_asset": "wei", "nonce": 1},
+        "denylist": []})
+    assert r.status_code == 403, r.text
+    assert "exceeds" in r.json()["detail"]

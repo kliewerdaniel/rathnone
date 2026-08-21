@@ -48,6 +48,27 @@ def max_settlement_value_wei() -> Optional[int]:
     return val
 
 
+# Conservative DEFAULT live ceiling. See ADR 26: 2026 agentic-finance rails
+# (Mastercard AP4M, Stripe agent tokens) treat a non-bypassable per-agent
+# spending cap as the critical blast-radius control. A deployed rathnone with
+# no operator-supplied ceiling must NOT silently fall back to "unbounded" for a
+# LIVE tenant — that is precisely the machine-speed drain the OpenAI->HuggingFace
+# intrusion demonstrated. This is a deliberately small safe default (1 ETH),
+# overridden by RATHNONE_MAX_SETTLEMENT_VALUE_WEI when the operator sets one.
+_LIVE_DEFAULT_MAX_SETTLEMENT_WEI = 10**18
+
+
+def live_default_max_settlement_wei() -> int:
+    """Conservative per-settlement ceiling for a LIVE tenant with no env set.
+
+    ADR 26: live tenants are bounded by default, not unbounded. The operator
+    MUST raise this via RATHNONE_MAX_SETTLEMENT_VALUE_WEI in production; the
+    default is intentionally small so a forgotten config fails safe (small cap)
+    instead of open-ended (no cap).
+    """
+    return _LIVE_DEFAULT_MAX_SETTLEMENT_WEI
+
+
 def live_signing_rate_max_per_window() -> int:
     """V1 ceiling: max live signatures per sliding window.
 
