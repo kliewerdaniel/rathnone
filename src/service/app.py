@@ -15,6 +15,8 @@ public key only.
 """
 from __future__ import annotations
 
+import os
+
 from dataclasses import asdict, dataclass
 from typing import Optional
 
@@ -44,6 +46,7 @@ from ..config import (
 )
 from .auth import require_api_key, require_key_ops_key, assert_auth_configured
 from .tenant import TenantRegistry
+from ..security.keystore import DurableOperatorKeyStore
 from .metering import MeteringLedger
 
 # ADR 19/21: safety verbs (halt/resume) are SERVICE-GLOBAL, not tenant-scoped, so
@@ -54,6 +57,7 @@ from .metering import MeteringLedger
 class _SafetyOperatorScope:
     operator_keys: "OperatorKeyRing" = None  # set below (avoids forward ref at import)
     _used_command_nonces: set[int] = set()
+    _keys_hydrated: bool = False  # ADR 23: False => load from durable store on first use
 
     def record_command(self, *, verb: str, operator_id: str,
                        operator_pubkey_pem: str, nonce: int,
@@ -67,9 +71,47 @@ class _SafetyOperatorScope:
         })
 
 
+_SAFETY_SCOPE = "safety"  # ADR 23: durable-store scope id for the global safety keyring
+# Per-tenant scope id is the tenant_id itself.
+
+# ADR 23 — durable operator-key store. None when RATHNONE_KEY_DB is unset:
+# the service stays fully in-memory (ADR 17-22 default). When set, the keyring is
+# hydrated from / written through to SQLite so runtime key changes survive restart.
+#
+# Resolved LAZILY at call time (like the ADR 17 auth env reads) so a deployment
+# can enable durability without re-importing the app module — and so the test
+# suite can toggle it per-session. The first call that finds RATHNONE_KEY_DB set
+# builds (and caches) the connection.
+_key_store: Optional["DurableOperatorKeyStore"] = None
+
+
+def _key_store_singleton() -> Optional["DurableOperatorKeyStore"]:
+    global _key_store
+    if _key_store is None and os.environ.get("RATHNONE_KEY_DB"):
+        _key_store = DurableOperatorKeyStore()
+    return _key_store
+
+
 _SAFETY_TENANT = _SafetyOperatorScope()
 _SAFETY_TENANT.operator_keys = OperatorKeyRing()
 _safety_audit: list[dict] = []
+
+
+def _hydrate_safety_keys() -> None:
+    """ADR 23 — load the global safety keyring from the durable store on first use.
+
+    Idempotent: guarded by ``_keys_hydrated``. After any mutation through the
+    management surface we reset that flag so a later read re-hydrates from the
+    written-through store (reflecting the new truth) rather than the stale
+    in-memory copy. A store read failure is fatal (fail-closed).
+    """
+    if _SAFETY_TENANT._keys_hydrated:
+        return
+    ks = _key_store_singleton()
+    if ks is None:
+        return
+    _SAFETY_TENANT.operator_keys = ks.load_scope(_SAFETY_SCOPE)
+    _SAFETY_TENANT._keys_hydrated = True
 
 
 def configure_safety_operators(pems: list[str]) -> None:
@@ -79,9 +121,17 @@ def configure_safety_operators(pems: list[str]) -> None:
     every key is revoked/expired), the signed-command layer for halt/resume is
     dormant and the ADR 17 static key is the sole gate — fail-closed and
     console-compatible. ADR 21: each PEM becomes a keyring entry so individual
-    keys can later be revoked/expired without a redeploy.
+    keys can later be revoked/expired without a redeploy. ADR 23: when a durable
+    store is configured, the new ring is written through so it survives restart.
     """
     _SAFETY_TENANT.operator_keys = OperatorKeyRing.from_pems(pems)
+    ks = _key_store_singleton()
+    if ks is not None:
+        ks.persist_ring(_SAFETY_SCOPE, _SAFETY_TENANT.operator_keys)
+    _SAFETY_TENANT._keys_hydrated = True  # bootstrap authoritative; mark hydrated
+
+
+_hydrate_safety_keys()  # hydrate at import if a durable store is configured
 
 
 app = FastAPI(title="Rathnone Gateway", version="0.1.0")
@@ -145,6 +195,22 @@ def _key_summary(ring: "OperatorKeyRing") -> list[dict]:
     } for e in ring]
 
 
+def _store_scope(target, scope: str, tenant_id: str = "") -> None:
+    """ADR 23 — write a mutated keyring back to the durable store (fail-closed).
+
+    Only acts when a durable store is configured. After persisting, reset the
+    target's ``_keys_hydrated`` flag so a subsequent read re-hydrates from the
+    store (the authoritative truth) rather than the now-stale in-memory copy.
+    A store write failure raises rather than silently degrading to memory.
+    """
+    ks = _key_store_singleton()
+    if ks is None:
+        return
+    sid = _SAFETY_SCOPE if scope == "safety" else tenant_id
+    ks.persist_ring(sid, target.operator_keys)
+    target._keys_hydrated = True
+
+
 @app.get("/operator-keys")
 def list_operator_keys(scope: str, tenant_id: str = "",
                        _: None = Depends(require_api_key),
@@ -164,6 +230,7 @@ def add_operator_key(body: _OpKeyAdd, scope: str, tenant_id: str = "",
     entry = target.operator_keys.add(
         body.public_key_pem, operator_id=body.operator_id,
         role=body.role, expires_at=body.expires_at)
+    _store_scope(target, scope, tenant_id)
     return {"key_id": entry.key_id, "operator_id": entry.operator_id,
             "active": entry.is_active(int(time.time()))}
 
@@ -177,6 +244,7 @@ def revoke_operator_key(body: _OpKeyRevoke, scope: str, tenant_id: str = "",
     ok = target.operator_keys.revoke(body.key_id)
     if not ok:
         raise HTTPException(status_code=404, detail="operator key not found")
+    _store_scope(target, scope, tenant_id)
     return {"revoked": body.key_id, "layer_active": bool(target.operator_keys.active_pems())}
 
 
@@ -190,6 +258,7 @@ def rotate_operator_key(body: _OpKeyRotate, scope: str, tenant_id: str = "",
         body.new_public_key_pem, old_pem=body.old_public_key_pem,
         operator_id=body.operator_id, expires_at=body.expires_at,
         expire_old_in_s=body.expire_old_in_s)
+    _store_scope(target, scope, tenant_id)
     return {"new_key_id": new.key_id,
             "layer_active": bool(target.operator_keys.active_pems())}
 
@@ -216,7 +285,6 @@ _velocity = VelocityGuard(clock=_clock,
 # default), get_venue() returns SimulatedVenue — identical to today, no egress.
 # Set both to broadcast authorized+live-signed actions to a real L2. Never
 # invented here; supply real values at deploy time.
-import os
 import time
 _L2_RPC_URL = os.environ.get("RATHNONE_L2_RPC_URL", "")
 _L2_CHAIN_ID = int(os.environ.get("RATHNONE_L2_CHAIN_ID", "0") or "0")
@@ -378,6 +446,13 @@ def _get_tenant(tenant_id: str) -> "object":
     t = _registry.get(tenant_id)
     if t is None:
         raise HTTPException(status_code=404, detail="tenant not found")
+    # ADR 23: if a durable key store is configured, hydrate this tenant's
+    # operator keyring from it on first access (lazy, fail-closed). A tenant
+    # created in this process starts with `_keys_hydrated=False`, so a keyring
+    # we built locally is used as-is until a mutation path marks it dirty.
+    if _key_store_singleton() is not None and not getattr(t, "_keys_hydrated", False):
+        t.operator_keys = _key_store_singleton().load_scope(tenant_id)
+        t._keys_hydrated = True
     return t
 
 

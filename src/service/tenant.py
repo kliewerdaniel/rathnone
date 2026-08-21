@@ -59,6 +59,7 @@ class Tenant:
     settlement_allowlist: set[str] = field(default_factory=set)  # v3 F6: trusted destinations
     operator_keys: OperatorKeyRing = field(default_factory=OperatorKeyRing)  # ADR 21: operator authority keyring (replaces bare PEM list)
     _used_command_nonces: set[int] = field(default_factory=set, repr=False)  # ADR 19: signed-command replay set
+    _keys_hydrated: bool = field(default=False, repr=False)  # ADR 23: True once loaded from durable store (or locally built)
     _records: list[dict] = field(default_factory=list, repr=False)
     _head: bytes = field(default=GENESIS, repr=False)
 

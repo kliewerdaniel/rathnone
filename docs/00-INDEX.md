@@ -29,6 +29,7 @@
 | `20-OPERATOR-AUTHORIZE-SIGNING.md` | ADR 20 RATIFIED+IMPLEMENTED: signed operator commands for `authorize_action` (live settlement transport) |
 | `21-OPERATOR-KEY-LIFECYCLE.md` | ADR 21 RATIFIED+IMPLEMENTED: operator key lifecycle — provision / rotate / revoke / expire (replaces bare PEM allowlist) |
 | `22-OPERATOR-KEY-MANAGEMENT.md` | ADR 22 RATIFIED+IMPLEMENTED: runtime key-management surface (add/revoke/rotate/list), double-gated by RATHNONE_API_KEY + RATHNONE_KEY_OPS |
+| `23-OPERATOR-KEY-PERSISTENCE.md` | ADR 23 RATIFIED+IMPLEMENTED: durable SQLite keyring (RATHNONE_KEY_DB) so runtime key changes survive restart across workers |
 
 ## Planned folder layout (target, not yet created)
 
