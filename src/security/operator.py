@@ -293,17 +293,18 @@ class OperatorKeyRing:
     def rotate(self, new_public_key_pem: str, *, old_pem: Optional[str] = None,
                operator_id: str = "", expires_at: Optional[int] = None,
                expire_old_in_s: int = 0, now_epoch_s: Optional[int] = None
-               ) -> "OperatorKeyRing":
+               ) -> "OperatorKeyEntry":
         """Add a new key and gracefully retire the old one (ADR 21).
 
         If ``old_pem`` is given and ``expire_old_in_s`` > 0, the old key is
         given a short expiry window (so in-flight commands signed under it keep
         working during the cutover) rather than an immediate revoke. Otherwise
-        the old key is revoked immediately.
+        the old key is revoked immediately. Returns the newly-added entry so the
+        caller can learn its ``key_id`` (useful for the ADR 22 management API).
         """
         now_epoch_s = now_epoch_s if now_epoch_s is not None else int(_time.time())
-        self.add(new_public_key_pem, operator_id=operator_id, role="operator",
-                 expires_at=expires_at, now_epoch_s=now_epoch_s)
+        new = self.add(new_public_key_pem, operator_id=operator_id, role="operator",
+                       expires_at=expires_at, now_epoch_s=now_epoch_s)
         if old_pem is not None:
             old = self._find(old_pem)
             if old is not None:
@@ -311,7 +312,7 @@ class OperatorKeyRing:
                     old.expires_at = now_epoch_s + expire_old_in_s
                 else:
                     old.revoked = True
-        return self
+        return new
 
     def active_pems(self, now_epoch_s: Optional[int] = None) -> list[str]:
         """Public keys that are currently authorized (not revoked, not expired)."""

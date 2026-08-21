@@ -42,7 +42,7 @@ from ..security.guards import (
 from ..config import (
     max_settlement_value_wei, live_signing_rate_max_per_window,
 )
-from .auth import require_api_key, assert_auth_configured
+from .auth import require_api_key, require_key_ops_key, assert_auth_configured
 from .tenant import TenantRegistry
 from .metering import MeteringLedger
 
@@ -83,8 +83,117 @@ def configure_safety_operators(pems: list[str]) -> None:
     """
     _SAFETY_TENANT.operator_keys = OperatorKeyRing.from_pems(pems)
 
+
 app = FastAPI(title="Rathnone Gateway", version="0.1.0")
 assert_auth_configured()  # ADR 17: refuse to boot an unauthenticated control plane
+
+
+# ---------------------------------------------------------------------------
+# ADR 22 — operator-key lifecycle management surface (runtime, no redeploy)
+#
+# These endpoints change WHO can sign operator commands (safety verbs + tenant
+# settlement), so they are the control plane's crown jewels. Each is gated by
+# TWO factors (ADR 17 + ADR 22):
+#   - require_api_key           -> the shared RATHNONE_API_KEY (transport gate)
+#   - require_key_ops_key       -> a DISTINCT RATHNONE_KEY_OPS secret (2nd factor)
+# Both must be satisfied in enforce mode; fail-closed otherwise. The console
+# never calls these (it cannot hold signing keys) — an out-of-band ops tool
+# does. A second factor is mandatory because a single shared key that also
+# gates routine tenant provisioning is a single point of compromise for the
+# entire live-signing authority.
+# ---------------------------------------------------------------------------
+
+class _OpKeyAdd(BaseModel):
+    public_key_pem: str
+    operator_id: str = ""
+    role: str = "operator"
+    expires_at: Optional[int] = None   # epoch s, None = no expiry
+
+
+class _OpKeyRevoke(BaseModel):
+    key_id: str          # sha256(pem)[:16] handle, OR the full PEM
+
+
+class _OpKeyRotate(BaseModel):
+    new_public_key_pem: str
+    old_public_key_pem: Optional[str] = None
+    operator_id: str = ""
+    expires_at: Optional[int] = None
+    expire_old_in_s: int = 0      # >0 -> graceful grace window instead of instant revoke
+
+
+def _scope_for(scope: str, tenant_id: str = ""):
+    """Resolve the keyring a management call targets (fail-closed)."""
+    if scope == "safety":
+        return _SAFETY_TENANT
+    if scope == "tenant":
+        if not tenant_id:
+            raise HTTPException(status_code=400, detail="tenant_id required for scope=tenant")
+        return _get_tenant(tenant_id)
+    raise HTTPException(status_code=400, detail="scope must be 'safety' or 'tenant'")
+
+
+def _key_summary(ring: "OperatorKeyRing") -> list[dict]:
+    return [{
+        "key_id": e.key_id,
+        "operator_id": e.operator_id,
+        "role": e.role,
+        "added_at": e.added_at,
+        "expires_at": e.expires_at,
+        "revoked": e.revoked,
+        "active": e.is_active(int(time.time())),
+    } for e in ring]
+
+
+@app.get("/operator-keys")
+def list_operator_keys(scope: str, tenant_id: str = "",
+                       _: None = Depends(require_api_key),
+                       __: None = Depends(require_key_ops_key)):
+    """ADR 22 — list current operator keys (active + historical) for a scope."""
+    target = _scope_for(scope, tenant_id)
+    return {"scope": scope, "tenant_id": tenant_id,
+            "keys": _key_summary(target.operator_keys)}
+
+
+@app.post("/operator-keys")
+def add_operator_key(body: _OpKeyAdd, scope: str, tenant_id: str = "",
+                     _: None = Depends(require_api_key),
+                     __: None = Depends(require_key_ops_key)):
+    """ADR 22 — provision a new operator key into a scope (no redeploy)."""
+    target = _scope_for(scope, tenant_id)
+    entry = target.operator_keys.add(
+        body.public_key_pem, operator_id=body.operator_id,
+        role=body.role, expires_at=body.expires_at)
+    return {"key_id": entry.key_id, "operator_id": entry.operator_id,
+            "active": entry.is_active(int(time.time()))}
+
+
+@app.post("/operator-keys/revoke")
+def revoke_operator_key(body: _OpKeyRevoke, scope: str, tenant_id: str = "",
+                        _: None = Depends(require_api_key),
+                        __: None = Depends(require_key_ops_key)):
+    """ADR 22 — immediately revoke a key by handle (key_id) or full PEM."""
+    target = _scope_for(scope, tenant_id)
+    ok = target.operator_keys.revoke(body.key_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="operator key not found")
+    return {"revoked": body.key_id, "layer_active": bool(target.operator_keys.active_pems())}
+
+
+@app.post("/operator-keys/rotate")
+def rotate_operator_key(body: _OpKeyRotate, scope: str, tenant_id: str = "",
+                        _: None = Depends(require_api_key),
+                        __: None = Depends(require_key_ops_key)):
+    """ADR 22 — add a new key and gracefully retire the old one (grace window)."""
+    target = _scope_for(scope, tenant_id)
+    new = target.operator_keys.rotate(
+        body.new_public_key_pem, old_pem=body.old_public_key_pem,
+        operator_id=body.operator_id, expires_at=body.expires_at,
+        expire_old_in_s=body.expire_old_in_s)
+    return {"new_key_id": new.key_id,
+            "layer_active": bool(target.operator_keys.active_pems())}
+
+
 _registry = TenantRegistry()
 _meters: dict[str, MeteringLedger] = {}
 
@@ -108,6 +217,7 @@ _velocity = VelocityGuard(clock=_clock,
 # Set both to broadcast authorized+live-signed actions to a real L2. Never
 # invented here; supply real values at deploy time.
 import os
+import time
 _L2_RPC_URL = os.environ.get("RATHNONE_L2_RPC_URL", "")
 _L2_CHAIN_ID = int(os.environ.get("RATHNONE_L2_CHAIN_ID", "0") or "0")
 

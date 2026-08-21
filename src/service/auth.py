@@ -78,4 +78,34 @@ def require_api_key(request: Request) -> None:
         raise HTTPException(status_code=401, detail="invalid control-plane key")
 
 
-__all__ = ["require_api_key", "assert_auth_configured"]
+def require_key_ops_key(request: Request) -> None:
+    """ADR 22 — second factor for the operator-key management surface.
+
+    The endpoints that add / revoke / rotate operator signing keys are the
+    control plane's crown jewels: they change *who* can move live money and trip
+    the circuit breaker. A single shared control-plane key is not enough — these
+    routes additionally require a distinct ``RATHNONE_KEY_OPS`` secret presented
+    via ``X-Key-Ops`` or ``Authorization-KeyOps``. In enforce mode the dependency
+    refuses if (a) no key-ops secret is configured, or (b) the presented value
+    does not match it (constant-time). Fail-closed: no secret configured -> 401,
+    never a silent pass.
+    """
+    if not _enforce():
+        return
+    key = os.environ.get("RATHNONE_KEY_OPS", "")
+    if not key:
+        raise HTTPException(
+            status_code=401,
+            detail="key-ops authentication required (RATHNONE_KEY_OPS not configured)",
+        )
+    raw = request.headers.get("x-key-ops")
+    if not raw:
+        auth = request.headers.get("authorization-keyops") or request.headers.get("authorization")
+        if auth:
+            _, _, raw = auth.partition(" ")
+            raw = raw or auth
+    if not raw or not hmac.compare_digest(raw.strip(), key):
+        raise HTTPException(status_code=401, detail="invalid key-ops secret")
+
+
+__all__ = ["require_api_key", "require_key_ops_key", "assert_auth_configured"]

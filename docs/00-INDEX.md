@@ -28,6 +28,7 @@
 | `18-OPERATOR-DOWNGRADE.md` | ADR 18 RATIFIED+IMPLEMENTED: signed operator downgrade path for hygiene-BLOCKED (commit 7458803) |
 | `20-OPERATOR-AUTHORIZE-SIGNING.md` | ADR 20 RATIFIED+IMPLEMENTED: signed operator commands for `authorize_action` (live settlement transport) |
 | `21-OPERATOR-KEY-LIFECYCLE.md` | ADR 21 RATIFIED+IMPLEMENTED: operator key lifecycle — provision / rotate / revoke / expire (replaces bare PEM allowlist) |
+| `22-OPERATOR-KEY-MANAGEMENT.md` | ADR 22 RATIFIED+IMPLEMENTED: runtime key-management surface (add/revoke/rotate/list), double-gated by RATHNONE_API_KEY + RATHNONE_KEY_OPS |
 
 ## Planned folder layout (target, not yet created)
 
