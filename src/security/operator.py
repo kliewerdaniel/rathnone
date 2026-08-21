@@ -186,6 +186,156 @@ class OperatorCommand:
             return False
 
 
+# ---------------------------------------------------------------------------
+# ADR 21 — operator key lifecycle (provision / rotate / revoke / expire)
+#
+# ADR 19/20 treated the operator authority as a bare list[str] of PEMs. That
+# leaves no room for: (a) immediate single-key revocation without a redeploy,
+# (b) graceful key rotation (add new + retire old on a window), or (c) key
+# expiry. The keyring keeps each authorized operator as a first-class,
+# metadata-bearing entry and exposes the set of *active* (not revoked, not
+# expired) public keys. The signed-command gate verifies against active keys
+# only, so revoking a key takes effect on the very next request; expiry is a
+# graceful rotation window (a key that lapses falls out of the active set and
+# the tenant reverts to the ADR 17 shared-key path — consistent with the
+# "dormant when no active allowlist" fail-closed default).
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+
+@dataclass
+class OperatorKeyEntry:
+    """One authorized operator key (ADR 21).
+
+    ``key_id`` is a stable, collision-resistant handle (sha256 of the PEM),
+    so a single key can be revoked by id without sending the full PEM.
+    ``expires_at`` is a Unix epoch *second* (None = no expiry). ``revoked``
+    is an immediate kill-switch independent of expiry.
+    """
+
+    public_key_pem: str
+    operator_id: str = ""
+    role: str = "operator"
+    added_at: int = 0           # epoch seconds
+    expires_at: Optional[int] = None   # epoch seconds, None = no expiry
+    revoked: bool = False
+    key_id: str = field(default="")
+
+    def __post_init__(self):
+        if not self.key_id:
+            self.key_id = hashlib.sha256(
+                self.public_key_pem.encode()).hexdigest()[:16]
+
+    def is_expired(self, now_epoch_s: int) -> bool:
+        return self.expires_at is not None and now_epoch_s >= self.expires_at
+
+    def is_active(self, now_epoch_s: int) -> bool:
+        return not self.revoked and not self.is_expired(now_epoch_s)
+
+    @classmethod
+    def from_pem(cls, pem: str, **kw) -> "OperatorKeyEntry":
+        return cls(public_key_pem=pem, **kw)
+
+
+class OperatorKeyRing:
+    """ADR 21 — the set of authorized operator keys for one authority scope.
+
+    Used for both tenant-scoped settlement authority (authorize verb) and the
+    service-global safety scope (safety verbs). Provisioned out-of-band (deploy
+    tooling), never via the console, which cannot hold signing keys.
+    """
+
+    def __init__(self, entries: Optional[list[OperatorKeyEntry]] = None):
+        self._entries: list[OperatorKeyEntry] = list(entries or [])
+
+    @classmethod
+    def from_pems(cls, pems: list[str], **kw) -> "OperatorKeyRing":
+        return cls([OperatorKeyEntry(public_key_pem=p, **kw) for p in pems])
+
+    def add(self, public_key_pem: str, *, operator_id: str = "",
+            role: str = "operator", expires_at: Optional[int] = None,
+            now_epoch_s: Optional[int] = None) -> OperatorKeyEntry:
+        now_epoch_s = now_epoch_s if now_epoch_s is not None else int(_time.time())
+        e = OperatorKeyEntry(
+            public_key_pem=public_key_pem, operator_id=operator_id,
+            role=role, added_at=now_epoch_s, expires_at=expires_at)
+        self._entries.append(e)
+        return e
+
+    def _find(self, pem: str) -> Optional[OperatorKeyEntry]:
+        for e in self._entries:
+            if e.public_key_pem == pem:
+                return e
+        return None
+
+    def revoke(self, key_id_or_pem: str) -> bool:
+        """Immediately revoke a key by id or full PEM. Returns True if found.
+
+        Revocation is a kill-switch: the key leaves the active set instantly,
+        so any subsequent command signed by it is refused. The entry is kept
+        (not deleted) so the audit trail preserves the historical authority.
+        """
+        target = key_id_or_pem
+        if not (target.startswith("-----") or "\n" in target):
+            # treated as a key_id
+            for e in self._entries:
+                if e.key_id == target:
+                    e.revoked = True
+                    return True
+            return False
+        e = self._find(target)
+        if e is None:
+            return False
+        e.revoked = True
+        return True
+
+    def rotate(self, new_public_key_pem: str, *, old_pem: Optional[str] = None,
+               operator_id: str = "", expires_at: Optional[int] = None,
+               expire_old_in_s: int = 0, now_epoch_s: Optional[int] = None
+               ) -> "OperatorKeyRing":
+        """Add a new key and gracefully retire the old one (ADR 21).
+
+        If ``old_pem`` is given and ``expire_old_in_s`` > 0, the old key is
+        given a short expiry window (so in-flight commands signed under it keep
+        working during the cutover) rather than an immediate revoke. Otherwise
+        the old key is revoked immediately.
+        """
+        now_epoch_s = now_epoch_s if now_epoch_s is not None else int(_time.time())
+        self.add(new_public_key_pem, operator_id=operator_id, role="operator",
+                 expires_at=expires_at, now_epoch_s=now_epoch_s)
+        if old_pem is not None:
+            old = self._find(old_pem)
+            if old is not None:
+                if expire_old_in_s > 0 and old.expires_at is None:
+                    old.expires_at = now_epoch_s + expire_old_in_s
+                else:
+                    old.revoked = True
+        return self
+
+    def active_pems(self, now_epoch_s: Optional[int] = None) -> list[str]:
+        """Public keys that are currently authorized (not revoked, not expired)."""
+        now_epoch_s = now_epoch_s if now_epoch_s is not None else int(_time.time())
+        return [e.public_key_pem for e in self._entries if e.is_active(now_epoch_s)]
+
+    def lookup(self, pem: str) -> Optional[OperatorKeyEntry]:
+        return self._find(pem)
+
+    def is_authorized(self, pem: str, now_epoch_s: Optional[int] = None) -> bool:
+        now_epoch_s = now_epoch_s if now_epoch_s is not None else int(_time.time())
+        e = self._find(pem)
+        return e.is_active(now_epoch_s) if e else False
+
+    def __iter__(self):
+        return iter(self._entries)
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def as_pems(self) -> list[str]:
+        return [e.public_key_pem for e in self._entries]
+
+
 def verify_command(cmd: "OperatorCommand", *, body: bytes,
                    allowlist_pems: list[str], used_nonces: set[int],
                    now: int, max_age_s: int = 60) -> tuple[bool, Optional[str]]:

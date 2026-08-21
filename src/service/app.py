@@ -27,7 +27,7 @@ from ..config import TenantLimits
 from ..risk.engine import RiskEngine, RiskState
 from ..security.operator import (
     OperatorAuthority, ApprovalRecord,
-    OperatorCommand, verify_command, body_hash_of,
+    OperatorCommand, verify_command, body_hash_of, OperatorKeyRing,
 )
 from ..security import replay as _replay
 from ..security.replay import ActionRegistry, DurableActionRegistry
@@ -46,13 +46,13 @@ from .auth import require_api_key, assert_auth_configured
 from .tenant import TenantRegistry
 from .metering import MeteringLedger
 
-# ADR 19: safety verbs (halt/resume) are SERVICE-GLOBAL, not tenant-scoped, so they
-# use a dedicated global operator allowlist + command-nonce set (separate from any
-# single tenant's). Empty by default => signed-command layer dormant; safety verbs
-# stay on the ADR 17 static-key path until operators are provisioned out-of-band.
-# Provision via app.configure_safety_operators([pem, ...]).
+# ADR 19/21: safety verbs (halt/resume) are SERVICE-GLOBAL, not tenant-scoped, so
+# they use a dedicated global operator keyring + command-nonce set (separate from
+# any single tenant's). Empty (no active keys) by default => signed-command layer
+# dormant; safety verbs stay on the ADR 17 static-key path until operators are
+# provisioned out-of-band. Provision via app.configure_safety_operators([pem, ...]).
 class _SafetyOperatorScope:
-    operator_allowlist: list[str] = []
+    operator_keys: "OperatorKeyRing" = None  # set below (avoids forward ref at import)
     _used_command_nonces: set[int] = set()
 
     def record_command(self, *, verb: str, operator_id: str,
@@ -68,17 +68,20 @@ class _SafetyOperatorScope:
 
 
 _SAFETY_TENANT = _SafetyOperatorScope()
+_SAFETY_TENANT.operator_keys = OperatorKeyRing()
 _safety_audit: list[dict] = []
 
 
 def configure_safety_operators(pems: list[str]) -> None:
-    """Provision the global operator allowlist for safety verbs (ADR 19).
+    """Provision the global operator keyring for safety verbs (ADR 19 + ADR 21).
 
-    Called out-of-band (deploy-time / operator tooling). Until called, the
-    signed-command layer for halt/resume is dormant and the ADR 17 static key is
-    the sole gate — fail-closed and console-compatible.
+    Called out-of-band (deploy-time / operator tooling). Until called (or after
+    every key is revoked/expired), the signed-command layer for halt/resume is
+    dormant and the ADR 17 static key is the sole gate — fail-closed and
+    console-compatible. ADR 21: each PEM becomes a keyring entry so individual
+    keys can later be revoked/expired without a redeploy.
     """
-    _SAFETY_TENANT.operator_allowlist = list(pems)
+    _SAFETY_TENANT.operator_keys = OperatorKeyRing.from_pems(pems)
 
 app = FastAPI(title="Rathnone Gateway", version="0.1.0")
 assert_auth_configured()  # ADR 17: refuse to boot an unauthenticated control plane
@@ -174,7 +177,7 @@ def _require_command(request: "object", *, verb: str, tenant_id: str,
     so the verb stays on the shared-key path until operators are provisioned
     out-of-band (tenant-scoped for authorize, global for safety verbs).
     """
-    allowlist = tenant.operator_allowlist
+    allowlist = tenant.operator_keys.active_pems() if hasattr(tenant, "operator_keys") else getattr(tenant, "operator_allowlist", [])
     if not allowlist:
         # No operators configured: the signed-command layer is not in force for
         # this tenant. The static control-plane key (applied at the route) remains
@@ -218,7 +221,7 @@ def create_tenant(body: _TenantCreate, _: None = Depends(require_api_key)):
     _meter_for(t.tenant_id, t)
     return {"tenant_id": t.tenant_id, "public_key_pem": t.public_key_pem,
             "aum": t.aum, "settlement_address": t.settlement_address,
-            "operator_gated": bool(t.operator_allowlist)}
+            "operator_gated": bool(t.operator_keys.active_pems())}
 
 
 @app.get("/tenants")
@@ -276,7 +279,7 @@ def tenant_info(tenant_id: str, _: None = Depends(require_api_key)):
         "tenant_id": t.tenant_id,
         "aum": t.aum,
         "live": t.settlement_key is not None,
-        "operator_gated": bool(t.operator_allowlist),
+        "operator_gated": bool(t.operator_keys.active_pems()),
     }
 
 

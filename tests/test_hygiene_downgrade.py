@@ -17,7 +17,15 @@ from src.hygiene import CorroborationLayer, DowngradeRecord, validate_downgrade
 from src.hygiene.downgrade import _SECOND_OP_CODES
 from src.service.pipeline import AuthorizationPipeline
 from src.service.tenant import TenantRegistry
-from src.security.operator import OperatorAuthority
+from src.security.operator import OperatorAuthority, OperatorKeyRing
+from cryptography.hazmat.primitives import serialization as _ser
+
+
+def _pem(key):
+    return key.public_key().public_bytes(
+        encoding=_ser.Encoding.PEM,
+        format=_ser.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
 
 
 def _action(**kw) -> FinancialAction:
@@ -73,10 +81,7 @@ def test_valid_downgrade_reenters_human_and_settles():
     layer = _enabled(feeds={}, instrument_master=_MASTER)  # no feed => price unverifiable BLOCK
     pipe = _pipe(t, layer)
     op = _op_keys(1)[0]
-    t.operator_allowlist = [op.public_key().public_bytes(
-        encoding=__import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.PEM,
-        format=__import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo,
-    ).decode()]
+    t.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
 
     a = _action(instrument="ETH", price_limit=1000.0, destination="0x" + "cd" * 20)
     # First confirm it is BLOCKED with no downgrade.
@@ -105,11 +110,7 @@ def test_destination_override_requires_second_operator():
     layer = _enabled()
     pipe = _pipe(t, layer)
     o1, o2 = _op_keys(2)
-    pem = lambda k: k.public_key().public_bytes(
-        encoding=__import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.PEM,
-        format=__import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
-    t.operator_allowlist = [pem(o1), pem(o2)]
+    t.operator_keys = OperatorKeyRing.from_pems([_pem(o1), _pem(o2)])
 
     a = _action(instrument="ETH", price_limit=1000.0, destination="0x" + "cd" * 20)
     res0 = pipe.run(a, denylist=())
@@ -128,7 +129,7 @@ def test_destination_override_requires_second_operator():
     single = DowngradeRecord(
         action_hash=a.action_hash, violation_ids=["destination_untrusted"],
         operator_id="op-1", reason="benign dest", nonce=2,
-        sig=o1.sign(_canon).hex(), pubkey_pem=pem(o1))
+        sig=o1.sign(_canon).hex(), pubkey_pem=_pem(o1))
     res1 = pipe.run(a, denylist=(), downgrade=single)
     assert res1.downgraded is False
     assert res1.verdict == "BLOCKED"
@@ -152,10 +153,7 @@ def test_spine_blocked_cannot_be_downgraded():
     layer = _enabled()
     pipe = _pipe(t, layer)
     op = _op_keys(1)[0]
-    t.operator_allowlist = [op.public_key().public_bytes(
-        encoding=__import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.PEM,
-        format=__import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo,
-    ).decode()]
+    t.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
 
     a = _action(instrument="ETH", price_limit=1000.0, destination="0x" + "cd" * 20,
                 risk_class="forbidden")
@@ -179,10 +177,7 @@ def test_bad_signature_refused():
     layer = _enabled(feeds={}, instrument_master=_MASTER)
     pipe = _pipe(t, layer)
     op, rogue = _op_keys(2)
-    t.operator_allowlist = [op.public_key().public_bytes(
-        encoding=__import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.PEM,
-        format=__import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo,
-    ).decode()]
+    t.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
 
     a = _action(instrument="ETH", price_limit=1000.0, destination="0x" + "cd" * 20)
     # Signature from an operator NOT on the allowlist.
@@ -198,10 +193,7 @@ def test_replayed_nonce_refused():
     layer = _enabled(feeds={}, instrument_master=_MASTER)
     pipe = _pipe(t, layer)
     op = _op_keys(1)[0]
-    t.operator_allowlist = [op.public_key().public_bytes(
-        encoding=__import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.PEM,
-        format=__import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo,
-    ).decode()]
+    t.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
 
     a = _action(instrument="ETH", price_limit=1000.0, destination="0x" + "cd" * 20)
     dg = layer.sign_downgrade(a, operator_key=op,
@@ -226,10 +218,7 @@ def test_downgrade_key_free_verifiable_from_ledger():
     layer = _enabled(feeds={}, instrument_master=_MASTER)
     pipe = _pipe(t, layer)
     op = _op_keys(1)[0]
-    t.operator_allowlist = [op.public_key().public_bytes(
-        encoding=__import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.PEM,
-        format=__import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo,
-    ).decode()]
+    t.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
 
     a = _action(instrument="ETH", price_limit=1000.0, destination="0x" + "cd" * 20)
     dg = layer.sign_downgrade(a, operator_key=op,
@@ -262,10 +251,7 @@ def test_validate_refuses_unrelated_violation_release():
     t = _build_tenant({"0x" + "cd" * 20})
     layer = _enabled(feeds={}, instrument_master=_MASTER)
     op = _op_keys(1)[0]
-    t.operator_allowlist = [op.public_key().public_bytes(
-        encoding=__import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.PEM,
-        format=__import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo,
-    ).decode()]
+    t.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
 
     a = _action(instrument="ETH", price_limit=1000.0, destination="0x" + "cd" * 20)
     # Hygiene blocks ONLY price_unverifiable (no feed). Try to release a
@@ -275,7 +261,7 @@ def test_validate_refuses_unrelated_violation_release():
     ok, why = validate_downgrade(
         dg, action=a,
         hygiene_violations=[{"code": "price_unverifiable", "message": "m"}],
-        operator_allowlist=t.operator_allowlist,
+        operator_allowlist=t.operator_keys.active_pems(),
         used_nonces=set())
     assert ok is False
     assert "not blocked on" in (why or "")

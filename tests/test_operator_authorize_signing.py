@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
-from src.security.operator import OperatorCommand, body_hash_of
+from src.security.operator import OperatorCommand, body_hash_of, OperatorKeyRing
 from src.service.app import app, _registry, _meters, _breaker, _clock
 
 
@@ -93,7 +93,7 @@ def gated_tenant():
     r = c.post("/tenants", json={"aum": 5_000_000.0, "live": True})
     tid = r.json()["tenant_id"]
     t = _registry.get(tid)
-    t.operator_allowlist = [_pem(op)]
+    t.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
     yield c, tid, op
     _registry._tenants.clear()
     _meters.clear()

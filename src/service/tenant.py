@@ -22,6 +22,7 @@ from exchange.epistemic_adapter import GovernanceAuthority
 from ..live.signing import Secp256k1Signer
 from ..mirror import GENESIS, _entry_body, make_ledger_entry
 from ..mirror import load_public_key as _load_public_key
+from ..security.operator import OperatorKeyRing
 from ..finance.capabilities import (
     CAP_FIN_TRADE_EXECUTE,
     CAP_FIN_TREASURY_REBALANCE,
@@ -56,7 +57,7 @@ class Tenant:
     aum: float = 0.0
     settlement_key: Optional[Secp256k1Signer] = None
     settlement_allowlist: set[str] = field(default_factory=set)  # v3 F6: trusted destinations
-    operator_allowlist: list[str] = field(default_factory=list)  # ADR 18: operator Ed25519 pubkey PEMs
+    operator_keys: OperatorKeyRing = field(default_factory=OperatorKeyRing)  # ADR 21: operator authority keyring (replaces bare PEM list)
     _used_command_nonces: set[int] = field(default_factory=set, repr=False)  # ADR 19: signed-command replay set
     _records: list[dict] = field(default_factory=list, repr=False)
     _head: bytes = field(default=GENESIS, repr=False)

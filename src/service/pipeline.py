@@ -171,7 +171,7 @@ class AuthorizationPipeline:
             ok, why = _hyg.validate_downgrade(
                 downgrade, action=action,
                 hygiene_violations=res.hygiene_violations,
-                operator_allowlist=self._tenant.operator_allowlist,
+                operator_allowlist=self._tenant.operator_keys.active_pems(),
                 used_nonces=self._tenant._used_command_nonces)
             if ok:
                 downgraded = True

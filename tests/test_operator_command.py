@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 
 from src.security.operator import (
     OperatorCommand, verify_command, body_hash_of,
-    OperatorAuthority,
+    OperatorAuthority, OperatorKeyRing,
 )
 from src.service.app import app, _SAFETY_TENANT, _safety_audit, _clock
 
@@ -64,11 +64,11 @@ def _cmd_header(cmd: OperatorCommand) -> dict:
 
 @pytest.fixture(autouse=True)
 def reset_safety_scope():
-    saved = list(_SAFETY_TENANT.operator_allowlist)
-    _SAFETY_TENANT.operator_allowlist = []
+    saved = _SAFETY_TENANT.operator_keys
+    _SAFETY_TENANT.operator_keys = OperatorKeyRing()
     _safety_audit.clear()
     yield
-    _SAFETY_TENANT.operator_allowlist = saved
+    _SAFETY_TENANT.operator_keys = saved
     _safety_audit.clear()
 
 
@@ -98,7 +98,7 @@ def test_no_allowlist_still_allows_halt_on_static_key():
 def test_halt_without_command_refused():
     c = next(_client())
     op = Ed25519PrivateKey.generate()
-    _SAFETY_TENANT.operator_allowlist = [_pem(op)]
+    _SAFETY_TENANT.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
     r = c.post("/safety/halt")
     assert r.status_code == 401
     assert "operator-signed command required" in r.text
@@ -107,7 +107,7 @@ def test_halt_without_command_refused():
 def test_halt_with_valid_command_attributed():
     c = next(_client())
     op = Ed25519PrivateKey.generate()
-    _SAFETY_TENANT.operator_allowlist = [_pem(op)]
+    _SAFETY_TENANT.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
     cmd = _sign_cmd(op, verb="halt", body=b"halt", nonce=1)
     r = c.post("/safety/halt", headers=_cmd_header(cmd))
     assert r.status_code == 200 and r.json()["breaker_open"] is True
@@ -120,7 +120,7 @@ def test_halt_with_valid_command_attributed():
 def test_replayed_nonce_refused():
     c = next(_client())
     op = Ed25519PrivateKey.generate()
-    _SAFETY_TENANT.operator_allowlist = [_pem(op)]
+    _SAFETY_TENANT.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
     cmd = _sign_cmd(op, verb="resume", body=b"resume", nonce=7)
     r1 = c.post("/safety/resume", headers=_cmd_header(cmd))
     assert r1.status_code == 200
@@ -133,7 +133,7 @@ def test_replayed_nonce_refused():
 def test_wrong_body_binding_refused():
     c = next(_client())
     op = Ed25519PrivateKey.generate()
-    _SAFETY_TENANT.operator_allowlist = [_pem(op)]
+    _SAFETY_TENANT.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
     # Command signed over b"halt" but the endpoint verifies against b"resume".
     cmd = _sign_cmd(op, verb="resume", body=b"halt", nonce=3)
     r = c.post("/safety/resume", headers=_cmd_header(cmd))
@@ -144,7 +144,7 @@ def test_wrong_body_binding_refused():
 def test_bad_signature_refused():
     c = next(_client())
     op = Ed25519PrivateKey.generate()
-    _SAFETY_TENANT.operator_allowlist = [_pem(op)]
+    _SAFETY_TENANT.operator_keys = OperatorKeyRing.from_pems([_pem(op)])
     cmd = _sign_cmd(op, verb="halt", body=b"halt", nonce=4)
     cmd.sig = "deadbeef"  # corrupt signature
     r = c.post("/safety/halt", headers=_cmd_header(cmd))
