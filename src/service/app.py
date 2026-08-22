@@ -155,6 +155,33 @@ def configure_safety_operators(pems: list[str]) -> None:
     _SAFETY_TENANT._keys_hydrated = True  # bootstrap authoritative; mark hydrated
 
 
+# --- ADR 43: harness-scope operator keyring (signed harness_apply commands) --
+# Parallel to the safety scope above. The harness `execute` surface requires a
+# signed OperatorCommand(verb="harness_apply") bound to the exact request body
+# once this keyring is provisioned. Empty by default => the signed-command layer
+# is dormant and `apply` falls back to HUMAN -> BLOCKED (never silently allowed).
+_HARNESS_SCOPE_ID = "harness"
+_HARNESS_TENANT = _SafetyOperatorScope()
+_HARNESS_TENANT.operator_keys = OperatorKeyRing()
+_HARNESS_USED_NONCES: set[int] = set()
+
+
+def configure_harness_operators(pems: list[str]) -> None:
+    """Provision the operator keyring for harness `execute` (ADR 43).
+
+    Out-of-band operator tooling only — the console never holds a signing key.
+    Until called, a harness `apply` is hard-blocked (HUMAN required) rather than
+    silently allowed. Provisioned operators must sign each `apply` with an
+    OperatorCommand the live _require_command gate verifies (scope-binding,
+    body-hash binding, nonce replay, timestamp window).
+    """
+    _HARNESS_TENANT.operator_keys = OperatorKeyRing.from_pems(pems)
+    ks = _key_store_singleton()
+    if ks is not None:
+        ks.persist_ring(_HARNESS_SCOPE_ID, _HARNESS_TENANT.operator_keys)
+    _HARNESS_TENANT._keys_hydrated = True
+
+
 _hydrate_safety_keys()  # hydrate at import if a durable store is configured
 
 
@@ -417,7 +444,7 @@ def _meter_for(tenant_id: str, tenant) -> MeteringLedger:
 
 
 def _require_command(request: "object", *, verb: str, tenant_id: str,
-                     body: bytes, tenant) -> None:
+                     body: bytes, tenant) -> "object":
     """ADR 19/20 gate for a safety- or settlement-critical verb.
 
     The static control-plane key (ADR 17, ``require_api_key``) is coarse transport
@@ -473,6 +500,7 @@ def _require_command(request: "object", *, verb: str, tenant_id: str,
     tenant.record_command(
         verb=verb, operator_id=cmd.operator_id,
         operator_pubkey_pem=cmd.pubkey_pem, nonce=cmd.nonce)
+    return cmd
 
 
 @app.post("/tenants")
@@ -760,29 +788,69 @@ from .harness_auth import evaluate_harness_action
 
 @app.post("/harness/authorize")
 def harness_authorize(
+    request: Request,
     body: dict,
     _: None = Depends(require_api_key),
 ):
-    """ADR 41/42: gate a harness apply-action against the control plane.
+    """ADR 41/42/43: gate a harness apply-action against the control plane.
 
     Body may carry ``{"policy_allow": bool, "human_override": bool, "kind":
-    "explore"|"apply", "pre_approved": bool}``. Returns ``{decision, reason,
-    breaker_open, dormant}``. The harness consults this before applying a
-    patch / commit / destructive command, and refuses on anything other than
-    ``ALLOW``. ``kind="explore"`` (read-only research) resolves to AUTO;
-    ``kind="apply"`` (consequential) resolves to HUMAN unless the operator
-    acknowledged it via ``pre_approved``.
+    "explore"|"apply"}``. Returns ``{decision, reason, breaker_open, dormant}``.
+    The harness consults this before applying a patch / commit / destructive
+    command, and refuses on anything other than ``ALLOW``.
+
+    ``kind="explore"`` (read-only research) resolves to AUTO — silent ALLOW,
+    no operator command required.
+
+    ``kind="apply"`` (consequential) resolves to HUMAN by default; when the
+    harness operator keyring is provisioned (``configure_harness_operators``),
+    the request MUST additionally carry a signed ``OperatorCommand`` in the
+    ``X-Operator-Command`` header (verb="harness_apply", bound to this exact
+    body). The static control-plane key (ADR 17) is necessary but not sufficient
+    for apply once operators exist — a compromised harness cannot self-approve.
     """
     policy_allow = bool(body.get("policy_allow", True))
     human_override = bool(body.get("human_override", False))
     kind = str(body.get("kind", "apply"))
-    pre_approved = bool(body.get("pre_approved", False))
+
+    # Canonicalize the exact bytes an operator command must bind to (ADR 43).
+    import json as _json
+    req_body = _json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+
+    # ADR 43: when harness operators are provisioned, `apply` MUST carry a signed
+    # OperatorCommand (verb="harness_apply") bound to these exact bytes. The gate
+    # verifies it (scope + body-hash + nonce replay + timestamp window) and flips
+    # the HUMAN verdict to AUTO. We read the command from the X-Operator-Command
+    # header here so the gate is the single source of truth (no second nonce
+    # tracker that can desync from it). Dormant (no keys) => HUMAN -> BLOCKED.
+    signed_cmd = None
+    op_pems = _HARNESS_TENANT.operator_keys.active_pems() or None
+    if kind == "apply" and op_pems:
+        raw_cmd = request.headers.get("x-operator-command")
+        if raw_cmd:
+            try:
+                import base64 as _b64
+                _cd = _json.loads(_b64.b64decode(raw_cmd).decode())
+                signed_cmd = OperatorCommand(**{
+                    k: v for k, v in _cd.items()
+                    if k in OperatorCommand.__dataclass_fields__
+                })
+            except Exception:
+                return {"decision": "DENY_OPEN",
+                        "reason": "operator command refused: malformed operator command",
+                        "breaker_open": _breaker.is_open, "dormant": False}
+
     verdict = evaluate_harness_action(
         kind=kind,
-        pre_approved=pre_approved,
         policy_allow=policy_allow,
         human_override=human_override,
         breaker_open=_breaker.is_open,
+        operator_allowlist=op_pems,
+        used_nonces=_HARNESS_USED_NONCES,
+        command_now=_command_clock.now(),
+        command_scope=_HARNESS_SCOPE_ID,
+        operator_command=signed_cmd,
+        request_body=req_body,
     )
     return {
         "decision": verdict.decision,

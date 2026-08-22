@@ -169,8 +169,11 @@ makes every subsequent apply refuse — not by spawning a real Codex process in 
    `rathnone.agent_harness_execute` (consequential apply/commit/destructive,
    HUMAN-by-default → operator prompted). `decide()` HUMAN-gates only the execute
    surface; explore never nags.
-2. **Human verdict path** — does HUMAN mean "prompt the operator in this terminal"
-   or "hard BLOCK until a signed operator command arrives"? (Recommend: prompt.)
+2. **Human verdict path** — **RESOLVED by ADR 43.** `execute` is now HARD-BLOCKED
+   until a **signed operator command** (verb=`harness_apply`, ADR 19/20/21
+   primitive) arrives, bound to the exact request body. The soft `pre_approved`
+   flag is gone — a compromised harness cannot self-approve. `explore` stays
+   silent AUTO. See `43-HARNESS-SIGNED-EXECUTE.md`.
 3. **Hygiene gate timing** — gate *before* every apply, or only on diffs > N lines?
    (Recommend: every apply to start; cheap given deterministic layer.)
 

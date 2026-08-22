@@ -21,6 +21,8 @@ default refuses, so a misconfigured dev surface cannot silently run open.
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -28,7 +30,8 @@ from typing import Optional
 
 import httpx
 
-from .harness_auth import HarnessVerdict
+from .harness_auth import HarnessVerdict, sign_harness_command
+from ..security.operator import OperatorCommand
 
 
 class HarnessAuthorizer:
@@ -75,24 +78,26 @@ class HarnessAuthorizer:
     # -- public API ---------------------------------------------------------
 
     def may_apply(self, action: str, *, kind: str = "apply",
-                  pre_approved: bool = False, human_override: bool = False) -> bool:
+                  operator_command: Optional["OperatorCommand"] = None,
+                  human_override: bool = False) -> bool:
         """Return True only if the control plane grants an unqualified ALLOW.
 
         ``kind`` selects the harness capability (ADR 42 split):
-          - ``"explore"`` -> read-only research; control plane returns AUTO -> allow.
-          - ``"apply"``   -> consequential; control plane returns HUMAN unless the
-            operator has acknowledged it via ``pre_approved``.
-
-        ``pre_approved`` re-requests the verdict with the HUMAN acknowledgement
-        flipped; it is re-verified by the control plane, never honored locally.
+          - ``"explore"`` -> read-only research; control plane returns AUTO -> allow
+            (no operator command required).
+          - ``"apply"``   -> consequential; the control plane returns HUMAN unless a
+            SIGNED operator command is presented (ADR 43). The harness must present
+            ``operator_command`` (built out-of-band by the operator via
+            ``sign_harness_command`` / ``scripts/harness_sign.py``). There is no
+            local ``pre_approved`` shortcut — a compromised harness cannot self-approve.
 
         Every other outcome (unreachable, malformed, BLOCKED, DENY_OPEN,
         breaker-open, or DORMANT-without-opt-in) returns False and records the
         reason on :attr:`last_reason`.
         """
         verdict = self._query(
-            policy_allow=True, human_override=human_override,
-            kind=kind, pre_approved=pre_approved)
+            action=action, policy_allow=True, human_override=human_override,
+            kind=kind, operator_command=operator_command)
         self.last_verdict = verdict
         self.last_reason = verdict.reason if verdict else self.last_reason
         if verdict is None:
@@ -105,14 +110,32 @@ class HarnessAuthorizer:
 
     # -- internals ----------------------------------------------------------
 
-    def _query(self, *, policy_allow: bool, human_override: bool,
-               kind: str = "apply", pre_approved: bool = False) -> Optional[HarnessVerdict]:
+    def _query(self, *, action: str, policy_allow: bool, human_override: bool,
+               kind: str = "apply",
+               operator_command: Optional["OperatorCommand"] = None
+               ) -> Optional[HarnessVerdict]:
         """Call /harness/authorize; translate to a HarnessVerdict (None = refuse)."""
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         body = {"policy_allow": policy_allow, "human_override": human_override,
-                "kind": kind, "pre_approved": pre_approved}
+                "kind": kind, "action": action}
+        # ADR 43: apply must bind to a signed operator command over this exact
+        # body — including the action string — so "approve one apply, execute
+        # another" is structurally impossible.
+        if operator_command is not None:
+            cmd = {
+                "verb": operator_command.verb,
+                "tenant_id": operator_command.tenant_id,
+                "body_hash": operator_command.body_hash,
+                "nonce": operator_command.nonce,
+                "timestamp": operator_command.timestamp,
+                "operator_id": operator_command.operator_id,
+                "pubkey_pem": operator_command.pubkey_pem,
+                "sig": operator_command.sig,
+            }
+            headers["X-Operator-Command"] = base64.b64encode(
+                json.dumps(cmd).encode()).decode()
         attempt = 0
         last_err: Optional[str] = None
         while attempt <= self.retries:
