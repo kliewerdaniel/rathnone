@@ -1,4 +1,4 @@
-# Rathnone — requirements (gateway v1)
+# Rathnone — requirements (finance gateway + knowledge-query engine)
 #
 # Pinned to exact versions for reproducible, fail-closed builds. Bump deliberately
 # and re-verify the suite (pytest + console tsc) before committing a version change.

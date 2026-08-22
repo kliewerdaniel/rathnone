@@ -22,6 +22,9 @@ Your model stays an *advisor*. It produces evidence (Kelly sizing, Bayesian edge
 **Platform / Infra engineer**
 Local-first authority runs on the client's infra (F3: hybrid). An optional cloud audit mirror (reusing fleet's GCP mirror pattern) provides read-public forensic verification without holding any signing key.
 
+**Agent-builder (knowledge substrate)**
+`src/query/` is a separate, additive surface: an LLM *constructs* a logical query (`Op` algebra); Rathnone *compiles and executes* it deterministically over a knowledge graph to an inspectable, reproducibly-hashed `EvidenceRecord`, served over HTTP behind an independent evidence-domain attestation + per-agent scope (ADR 27–33). The engine has its own key and never imports `decide()` — belief, permission, and evidence remain three separate boundaries.
+
 ## What Rathnone is NOT
 
 - Not another multi-agent orchestration framework.

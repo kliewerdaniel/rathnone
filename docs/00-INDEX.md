@@ -1,8 +1,8 @@
 # Rathnone — Docs Index
 
-**One-line definition:** A Sovereign Finance Gateway — a commercial product that rides the frozen, model-independent `fleet.epistemic.decide()` authorization spine from `sovereign-agent-fleet` to govern consequential finance actions (trade execution, treasury rebalance, on-chain settlement) with cryptographic verifiability and an immutable audit ledger.
+**One-line definition:** A local-first, fail-closed authority service with two independent surfaces: (1) a Sovereign Finance Gateway riding the frozen, model-independent `fleet.epistemic.decide()` spine to govern consequential finance actions (trade execution, treasury rebalance, on-chain settlement) with cryptographic verifiability and an immutable audit ledger; and (2) a deterministic Knowledge-Query & Evidence Engine (`src/query/`, ADR 27–33) that compiles an LLM-constructed logical query to an inspectable, attested `EvidenceRecord` served over HTTP behind an independent evidence-domain scope. The two surfaces never share trust (separate Ed25519 evidence key; the engine never imports `decide()`).
 
-**Status:** Implemented & verified. v1 (53 tests) + v2 control plane (16 adversarial) + v3 epistemic-hygiene layer + operator console (safety, trace, reconcile) + ADR 18 operator-downgrade path all shipped and green (129 pytest). Forks F1–F4 + F5–F9 ratified; ADR 18 operator-downgrade ratified. Live track + hygiene gate + operator downgrade are opt-in, fail-closed.
+**Status:** Implemented & verified. Finance gateway (ADR 17–24, 26) + knowledge-query engine (ADR 27–33) shipped and green. Full suite: **243 pytest passing**. The knowledge substrate is proven both in-process (`TestClient`) and over a real TCP socket (`uvicorn` + `httpx`, ADR 33). Live track, hygiene gate, operator downgrade, and evidence scope are opt-in, fail-closed.
 
 ## Doc map
 
@@ -26,11 +26,25 @@
 | `15-OPERATOR-CONSOLE.md` | Operator console surface: console→endpoint map, /reconcile, V4 breaker, verification |
 | `16-V3-EPISTEMIC-HYGIENE.md` | v3 IMPLEMENTED: epistemic-hygiene / knowledge-poisoning layer (forks F5–F9 ratified) |
 | `18-OPERATOR-DOWNGRADE.md` | ADR 18 RATIFIED+IMPLEMENTED: signed operator downgrade path for hygiene-BLOCKED (commit 7458803) |
+| `19-OPERATOR-COMMAND-AUTH.md` | ADR 19 RATIFIED+IMPLEMENTED: signed operator command authorization (scope-bound verify) |
 | `20-OPERATOR-AUTHORIZE-SIGNING.md` | ADR 20 RATIFIED+IMPLEMENTED: signed operator commands for `authorize_action` (live settlement transport) |
 | `21-OPERATOR-KEY-LIFECYCLE.md` | ADR 21 RATIFIED+IMPLEMENTED: operator key lifecycle — provision / rotate / revoke / expire (replaces bare PEM allowlist) |
 | `22-OPERATOR-KEY-MANAGEMENT.md` | ADR 22 RATIFIED+IMPLEMENTED: runtime key-management surface (add/revoke/rotate/list), double-gated by RATHNONE_API_KEY + RATHNONE_KEY_OPS |
 | `23-OPERATOR-KEY-PERSISTENCE.md` | ADR 23 RATIFIED+IMPLEMENTED: durable SQLite keyring (RATHNONE_KEY_DB) so runtime key changes survive restart across workers |
 | `24-HYGIENE-SOURCES.md` | ADR 24 RATIFIED+IMPLEMENTED: distinct-origin corroboration sources (quorum over named sources, not repeated values) + fail-closed env config |
+| `26-LIVE-CEILING-DEFAULT.md` | ADR 26 RATIFIED+IMPLEMENTED: live-tenant default settlement ceiling — 1 ETH fail-closed cap when `RATHNONE_MAX_SETTLEMENT_VALUE_WEI` unset |
+
+### Knowledge-Query & Evidence Engine (ADR 27–33, `src/query/`)
+
+| File | Purpose |
+|------|---------|
+| `27-KNOWLEDGE-QUERY-EVIDENCE.md` | ADR 27 RATIFIED+IMPLEMENTED: deterministic knowledge-query & evidence engine — `Op` algebra + executor + `EvidenceRecord` |
+| `28-NL-QUERY-COMPILER.md` | ADR 28 RATIFIED+IMPLEMENTED: deterministic, LLM-free NL → `Op` compiler |
+| `29-QUERY-SERVICE.md` | ADR 29 RATIFIED+IMPLEMENTED: knowledge-query HTTP service (`create_app()`) for agent access |
+| `30-EVIDENCE-ATTESTATION.md` | ADR 30 RATIFIED+IMPLEMENTED: evidence-domain attestation authority (independent Ed25519 key) |
+| `31-AGENT-HARNESS.md` | ADR 31 RATIFIED+IMPLEMENTED: reference `KnowledgeAgent` harness (off-line attestation verify) |
+| `32-EVIDENCE-OPERATION-SCOPE.md` | ADR 32 RATIFIED+IMPLEMENTED: per-agent `QueryScope` permissioning, bound to query body, fail-closed over wire |
+| `33-LIVE-TRANSPORT.md` | ADR 33 RATIFIED+IMPLEMENTED: live-transport service over real TCP (`uvicorn` + `httpx`) — deployability gate |
 
 ## Planned folder layout (target, not yet created)
 
