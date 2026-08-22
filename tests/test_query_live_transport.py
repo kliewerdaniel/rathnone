@@ -10,7 +10,12 @@ Coverage:
   * health / graph load over real TCP,
   * attested Op query with off-line signature verification (httpx transport),
   * ADR 32 envelope enforced over the wire: a signed scope bound to the exact
-    Op plan succeeds; an unscoped request to a provisioned server is 401.
+    Op plan succeeds; an unscoped request to a provisioned server is 401;
+    a valid signature bound to the WRONG query body is 403,
+  * ADR 34 + 35 live audit: the served authority trust log verifies against the
+    operator-PINNED anchor (no trust-on-first-fetch) and the witness log verifies
+    off-line against the same evidence key AND records the exact record hashes
+    our attested queries served.
 
 The server runs in a background thread; the test fixture tears it down. Env is
 set via monkeypatch so nothing leaks into the rest of the suite.
@@ -31,6 +36,8 @@ from src.query.scope import (
     EvidenceOpAuthority,
     QueryScope,
     op_body_hash,
+    nl_binding_bytes,
+    body_hash_of,
 )
 from src.query.service import create_app
 from src.query.algebra import Op
@@ -64,8 +71,8 @@ def _mint(authority, *, graph_name, agent_id, body_hash, capabilities,
 
 @pytest.fixture
 def live(monkeypatch):
-    """Start the real query service on a TCP socket; yield (url, op_authority)."""
-    att_sk, _ = generate_keypair()
+    """Start the real query service on a TCP socket; yield (url, op_authority, evidence_pub_pem)."""
+    att_sk, att_pub = generate_keypair()
     op_sk, _ = generate_keypair()
     monkeypatch.setenv("RATHNONE_EVIDENCE_KEY_PEM", att_sk.decode("utf-8"))
     monkeypatch.setenv("RATHNONE_EVIDENCE_OP_KEY_PEM", op_sk.decode("utf-8"))
@@ -99,13 +106,13 @@ def live(monkeypatch):
         pytest.fail(f"live server did not start on {base}")
 
     op_authority = EvidenceOpAuthority.from_pem("evidence-op-authority", op_sk)
-    yield base, op_authority
+    yield base, op_authority, att_pub
     stop.set()
     t.join(timeout=5.0)
 
 
 def test_attested_op_query_over_wire(live):
-    base, op_authority = live
+    base, op_authority, _ = live
     client = httpx.Client(base_url=base, timeout=5.0)
     agent = KnowledgeAgent(client)
     path = os.environ.get("RATHNONE_SKC_ARTIFACT", _SKC_DEFAULT)
@@ -126,7 +133,7 @@ def test_attested_op_query_over_wire(live):
 
 
 def test_scope_enforced_over_wire(live):
-    base, op_authority = live
+    base, op_authority, _ = live
     client = httpx.Client(base_url=base, timeout=5.0)
     agent = KnowledgeAgent(client)
     path = os.environ.get("RATHNONE_SKC_ARTIFACT", _SKC_DEFAULT)
@@ -154,7 +161,7 @@ def test_scope_wrong_body_over_wire_rejected(live):
     """A valid signature but a body_hash that does NOT bind to the presented
     query must be refused (403) -- proves the binding check is live, not just
     the signature check."""
-    base, op_authority = live
+    base, op_authority, _ = live
     client = httpx.Client(base_url=base, timeout=5.0)
     agent = KnowledgeAgent(client)
     path = os.environ.get("RATHNONE_SKC_ARTIFACT", _SKC_DEFAULT)
@@ -172,4 +179,47 @@ def test_scope_wrong_body_over_wire_rejected(live):
     }, headers=agent._headers())
     assert r.status_code == 403
     agent.set_scope(None)
+    client.close()
+
+
+def test_adr34_35_authority_and_witness_audit_over_wire(live):
+    """ADR 34 + 35 — the served evidence is auditable end-to-end over a real
+    socket. The attestation authority trust log must verify against the
+    operator-PINNED anchor (no trust-on-first-fetch), and the witness log must
+    verify off-line against the SAME evidence key AND record the exact record
+    hashes our attested queries served."""
+    base, op_authority, evidence_pub = live
+    client = httpx.Client(base_url=base, timeout=5.0)
+    agent = KnowledgeAgent(client)
+    path = os.environ.get("RATHNONE_SKC_ARTIFACT", _SKC_DEFAULT)
+    agent.load_graph(path, graph_name="skc")
+
+    op = {"kind": "MATCH", "arg": "learning"}
+    op_scope = _mint(op_authority, graph_name="skc", agent_id="auditor",
+                     body_hash=op_body_hash(Op.from_dict(op).to_dict()),
+                     capabilities=[], max_results=50, nonce=21)
+    agent.set_scope(op_scope)
+    op_res = agent.query_op(op, graph_name="skc", attested=True)
+    agent.set_scope(None)
+    assert op_res.signature_ok is True
+
+    nl_text = "research about optimization connected to convex"
+    nl_scope = _mint(op_authority, graph_name="skc", agent_id="auditor",
+                     body_hash=body_hash_of(nl_binding_bytes(nl_text)),
+                     capabilities=[], max_results=1000, nonce=22)
+    agent.set_scope(nl_scope)
+    nl_res = agent.query_nl(nl_text, graph_name="skc")
+    agent.set_scope(None)
+    assert nl_res.signature_ok is True
+
+    # ADR 34: verify served trust log against the pinned anchor, NOT the served key.
+    assert agent.verify_authority(evidence_pub) is True
+
+    # ADR 35: witness log verifies off-line AND contains our served record hashes.
+    assert agent.verify_witness_log(evidence_pub) is True
+    served = agent.fetch_witness_log()
+    entries = served.get("entries", [])
+    served_hashes = {e.get("record_hash") for e in entries}
+    assert op_res.raw["deterministic_hash"] in served_hashes
+    assert nl_res.raw["deterministic_hash"] in served_hashes
     client.close()

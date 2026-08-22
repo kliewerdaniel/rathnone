@@ -60,16 +60,25 @@ scope — exactly the path the live harness drives.
    a provisioned server is refused (401); a valid signature with a
    non-binding `body_hash` is refused (403). The replay guard (per-nonce) is
    exercised: presenting the same scope nonce twice is refused.
+4. **ADR 34 + 35 live audit:** after serving attested queries, the harness
+   verifies the served `/authority/trust-log` against the **operator-pinned**
+   evidence anchor (no trust-on-first-fetch) and the `/witness/log` off-line
+   against the same evidence key — and confirms the witness log records the
+   exact `deterministic_hash` values that were served. The whole evidence-domain
+   trust chain is therefore proven auditable over a real socket, not just in
+   unit tests.
 
 ## Files
 
 - `examples/live_harness.py` (NEW): runnable PoC — `uvicorn` server thread +
   `httpx.Client`, prints a `SUMMARY: N passed, M failed` line (8/8). Mirrors
-  `examples/agent_harness.py` but across the wire.
-- `tests/test_query_live_transport.py` (NEW, 3 tests): durable gate that serves
+  `examples/agent_harness.py` but across the wire. Hardened to also verify the
+  ADR 34 authority trust log (against the pinned anchor) and the ADR 35 witness
+  log off-line over the real socket.
+- `tests/test_query_live_transport.py` (NEW, 4 tests): durable gate that serves
   the real app on a free TCP port and drives it with `httpx`; asserts attestation
-  over wire + scope enforcement (success / 401 / 403). Env via `monkeypatch` so
-  nothing leaks into the suite.
+  over wire + scope enforcement (success / 401 / 403) + the ADR 34/35 live audit
+  path. Env via `monkeypatch` so nothing leaks into the suite.
 - `src/query/service.py`: `_run` gains `body_binding_done` kwarg; NL handlers
   pass it (fixes the text-bound scope rejection above).
 - `docs/33-LIVE-TRANSPORT.md` (this ADR).
@@ -86,6 +95,7 @@ scope — exactly the path the live harness drives.
 
 ## Test
 
-- `examples/live_harness.py` → `SUMMARY: 8 passed, 0 failed` (real socket).
-- `pytest tests/test_query_live_transport.py` → 3 passed.
-- Full suite: `243 passed` (240 + 3).
+- `examples/live_harness.py` → `SUMMARY: 11 passed, 0 failed` (real socket; incl.
+  ADR 34/35 live audit).
+- `pytest tests/test_query_live_transport.py` → 4 passed.
+- Full suite: `263 passed` (259 + 4).

@@ -12,7 +12,11 @@ REAL socket instead of in-process TestClient. It:
   5. verifies every returned attestation OFF-LINE against the public key it
      fetched over the wire,
   6. proves the envelope bites: a narrow MATCH-only scope succeeds for a MATCH
-     query, while an unscoped request to the provisioned server is refused (401).
+     query, while an unscoped request to the provisioned server is refused (401),
+  7. verifies the ADR 34 evidence-authority trust log against the PINNED anchor
+     (no trust-on-first-fetch) and the ADR 35 witness log off-line against the
+     SAME evidence key -- proving the served evidence is auditable end-to-end
+     over a real socket, not just in unit tests.
 
 Note on the envelope's granularity: a QueryScope binds to ONE query body (its
 body_hash). The realistic operator pattern is therefore per-query: the operator
@@ -94,10 +98,11 @@ def main() -> int:
 
     # Provision BOTH the attestation authority and the evidence-operation
     # authority by setting env BEFORE build (create_app reads env at call time).
-    att_sk, _ = generate_keypair()
+    att_sk, att_pub = generate_keypair()
     op_sk, _ = generate_keypair()
     os.environ["RATHNONE_EVIDENCE_KEY_PEM"] = att_sk.decode("utf-8")
     os.environ["RATHNONE_EVIDENCE_OP_KEY_PEM"] = op_sk.decode("utf-8")
+    _pub = att_pub  # public PEM of the evidence key; the operator-pinned anchor
 
     app = create_app()
     stop = threading.Event()
@@ -192,6 +197,32 @@ def main() -> int:
             "/query/op", json={"graph_name": "skc", "op": op},
             headers=agent._headers())
         results["scope_required_when_provisioned"] = refused.status_code == 401
+
+        # 6. ADR 34 + 35 LIVE audit, over the real socket. The queries above were
+        #    served attested, so they populated the witness log. Now prove the
+        #    whole trust chain is verifiable off-line against the PINNED evidence
+        #    key the operator holds out-of-band (NOT the served public key).
+        #
+        #    - ADR 34: the served authority trust log must verify against the
+        #      pinned anchor PEM (no trust-on-first-fetch), and the key the
+        #      service is currently signing with must equal the chain's current
+        #      trusted key.
+        anchor_pem = _pub  # public PEM of the evidence key we provisioned
+        results["adr34_authority_anchor_verifies"] = agent.verify_authority(anchor_pem)
+        #    - ADR 35: the served witness log must verify off-line against the
+        #      same evidence key, and must actually contain the entries our
+        #      attested queries produced (auditability, not just integrity).
+        witness_ok = agent.verify_witness_log(anchor_pem)
+        served = agent.fetch_witness_log()
+        entries = served.get("entries", [])
+        results["adr35_witness_log_verifies"] = bool(witness_ok) and len(entries) >= 2
+        # The served record hashes must match what our own queries returned --
+        # i.e. the log is not just internally valid, it records what we saw.
+        served_hashes = {e.get("record_hash") for e in entries}
+        results["adr35_witness_records_match_served"] = (
+            nl.raw["deterministic_hash"] in served_hashes
+            and op_res.raw["deterministic_hash"] in served_hashes
+        )
     finally:
         stop.set()
         t.join(timeout=5.0)

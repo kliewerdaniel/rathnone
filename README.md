@@ -121,7 +121,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 # The frozen spine is vendored at vendor/fleet_spine (pinned commit in
 # vendor/fleet_spine/PINNED_COMMIT). The venv's fleet_overlay.pth points there.
-pytest -q                       # 262 passing
+pytest -q                       # 263 passing
 
 # --- Finance Gateway ---
 RATHNONE_MAX_SETTLEMENT_VALUE_WEI=500000000000000000 \
@@ -326,7 +326,7 @@ vendor/fleet_spine/   pinned, read-only snapshot of sovereign-agent-fleet
 console/              Next.js operator console
 docs/                 design surface (00-INDEX .. 35-EVIDENCE-WITNESS-LOG)
 examples/             runnable PoCs: agent_harness.py, live_harness.py
-tests/                262 tests (gateway, security, query engine, live transport)
+tests/                263 tests (gateway, security, query engine, live transport)
 scripts/              operator signing / scope-signing / evidence-log audit helpers
 Dockerfile            reproducible, non-root, fail-closed image
 docker-compose.yml    hardened local deployment

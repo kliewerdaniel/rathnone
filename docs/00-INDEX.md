@@ -2,7 +2,7 @@
 
 **One-line definition:** A local-first, fail-closed authority service with two independent surfaces: (1) a Sovereign Finance Gateway riding the frozen, model-independent `fleet.epistemic.decide()` spine to govern consequential finance actions (trade execution, treasury rebalance, on-chain settlement) with cryptographic verifiability and an immutable audit ledger; and (2) a deterministic Knowledge-Query & Evidence Engine (`src/query/`, ADR 27–33) that compiles an LLM-constructed logical query to an inspectable, attested `EvidenceRecord` served over HTTP behind an independent evidence-domain scope. The two surfaces never share trust (separate Ed25519 evidence key; the engine never imports `decide()`).
 
-**Status:** Implemented & verified. Finance gateway (ADR 17–24, 26) + knowledge-query engine (ADR 27–35) shipped and green. Full suite: **262 pytest passing**. The knowledge substrate is proven both in-process (`TestClient`) and over a real TCP socket (`uvicorn` + `httpx`, ADR 33). Live track, hygiene gate, operator downgrade, and evidence scope are opt-in, fail-closed.
+**Status:** Implemented & verified. Finance gateway (ADR 17–24, 26) + knowledge-query engine (ADR 27–35) shipped and green. Full suite: **263 pytest passing**. The knowledge substrate is proven both in-process (`TestClient`) and over a real TCP socket (`uvicorn` + `httpx`, ADR 33). Live track, hygiene gate, operator downgrade, and evidence scope are opt-in, fail-closed.
 
 ## Doc map
 
