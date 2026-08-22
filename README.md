@@ -121,7 +121,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 # The frozen spine is vendored at vendor/fleet_spine (pinned commit in
 # vendor/fleet_spine/PINNED_COMMIT). The venv's fleet_overlay.pth points there.
-pytest -q                       # 259 passing
+pytest -q                       # 262 passing
 
 # --- Finance Gateway ---
 RATHNONE_MAX_SETTLEMENT_VALUE_WEI=500000000000000000 \
@@ -154,6 +154,34 @@ print(res.included_ids, res.excluded_ids) # inspectable evidence
 
 Full provenance is verified by `res.raw["deterministic_hash"]` and the
 `EvidenceRecord.verify()` / `reconcile_with()` methods.
+
+### Operating the evidence domain (ADR 34 + 35)
+
+Operator tooling (in `scripts/`, no new code paths — they drive the running
+service over HTTP):
+
+- `scripts/evidence_key_log.py` — manage the ADR 34 evidence-authority trust log:
+  `bootstrap` / `rotate` / `revoke` the evidence key, producing a self-certifying
+  hash-chain the agent verifies against a **pinned** anchor (no trust-on-first-fetch).
+- `scripts/evidence_witness_verify.py` — audit the ADR 35 witness log against a
+  live deployment:
+
+  ```bash
+  # Verify the served-witness chain + signatures off-line against the pinned key:
+  python scripts/evidence_witness_verify.py verify \
+      --base-url http://127.0.0.1:8791 \
+      --evidence-key /secure/evidence_ed25519.pem
+
+  # Archive the log for later off-line replay:
+  python scripts/evidence_witness_verify.py export \
+      --base-url http://127.0.0.1:8791 --out /audit/witness_$(date +%F).json
+  ```
+
+  The tool never trusts the served public key; it verifies against the same key
+  the operator anchors via ADR 34. (Drift detection — does a served record still
+  match a fresh execution? — lives in the agent harness `assert_stable` /
+  `reconcile`, because the witness log stores only the record hash, not the query
+  spec, by design.)
 
 ---
 
@@ -298,8 +326,8 @@ vendor/fleet_spine/   pinned, read-only snapshot of sovereign-agent-fleet
 console/              Next.js operator console
 docs/                 design surface (00-INDEX .. 35-EVIDENCE-WITNESS-LOG)
 examples/             runnable PoCs: agent_harness.py, live_harness.py
-tests/                259 tests (gateway, security, query engine, live transport)
-scripts/              operator signing / scope-signing helpers
+tests/                262 tests (gateway, security, query engine, live transport)
+scripts/              operator signing / scope-signing / evidence-log audit helpers
 Dockerfile            reproducible, non-root, fail-closed image
 docker-compose.yml    hardened local deployment
 .env.example          deployment knobs
