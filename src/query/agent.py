@@ -122,6 +122,32 @@ class KnowledgeAgent:
         assert self._public_pem is not None
         return self._public_pem
 
+    def verify_authority(self, anchor_pem: bytes) -> bool:
+        """ADR 34 — verify the served evidence-authority trust log against a
+        PINNED anchor PEM (the operator-out-of-band root). This replaces naive
+        trust-on-first-fetch: the agent refuses to trust any public key whose log
+        is not a valid, anchored hash-chain rooted at ``anchor_pem``.
+
+        ``anchor_pem`` is the operator-known root; it is NEVER taken from the
+        served log. Returns True only if the chain is intact AND rooted at the
+        pinned anchor AND its current entry is the key this client has cached.
+        """
+        from .authority import AuthorityLog, verify_trust_log
+        r = self._client.get("/authority/public-key")
+        if r.status_code >= 400:
+            raise RuntimeError(
+                f"/authority/public-key -> {r.status_code}: {r.text}")
+        body = r.json()
+        log = AuthorityLog.from_dict(body.get("trust_log", {}))
+        ok, _reason = verify_trust_log(log, anchor_pem)
+        if not ok:
+            return False
+        # The key the service is currently signing with must equal the chain's
+        # current trusted key.
+        current_pem = body["public_key_pem"]
+        self._public_pem = current_pem.encode("utf-8")
+        return current_pem == log.current_pem()
+
     # --- querying -------------------------------------------------------
     def query_nl(self, text: str, graph_name: str = "default",
                  *, attested: bool = True,

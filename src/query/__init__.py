@@ -52,6 +52,14 @@ from .compiler import (
     CompileError,
     compile_query,
 )
+from .authority import (
+    AuthorityEntry,
+    AuthorityLog,
+    verify_trust_log,
+    build_bootstrap_log,
+    append_rotate,
+    append_revoke,
+)
 from .attest import (
     Attestation,
     EvidenceAuthority,
@@ -103,6 +111,12 @@ __all__ = [
     "QueryCompiler",
     "CompileError",
     "compile_query",
+    "AuthorityEntry",
+    "AuthorityLog",
+    "verify_trust_log",
+    "build_bootstrap_log",
+    "append_rotate",
+    "append_revoke",
     "Attestation",
     "EvidenceAuthority",
     "generate_keypair",

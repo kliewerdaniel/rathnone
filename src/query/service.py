@@ -13,6 +13,7 @@ Endpoints
 ``POST /query/op``           run a query supplied as an ``Op`` dict
 ``POST /query/nl``           run a query supplied as natural-language text
 ``GET  /authority/public-key``  evidence-domain public key (verify off-line)
+``GET  /authority/trust-log``  ADR 34 evidence-authority trust log (anchored chain)
 ``POST /query/op/attested``  like /query/op, plus an Ed25519 attestation
 ``POST /query/nl/attested``  like /query/nl, plus an Ed25519 attestation
 ``GET  /health``             liveness probe
@@ -49,6 +50,7 @@ from .attest import (
     generate_keypair,
     verify_attestation,
 )
+from .authority import build_bootstrap_log
 from .compiler import compile_query
 from .executor import EvidenceRecord, KnowledgeGraph, QueryExecutor
 from .loader import graph_from_skc_artifact
@@ -153,6 +155,13 @@ def create_app() -> FastAPI:
     op_authority = _bootstrap_op_authority()   # None => scope enforcement dormant
     used_scope_nonces: set[int] = set()
     control_key = _CONTROL_KEY
+    # ADR 34: the trust log is rooted at the bootstrap entry for THIS evidence
+    # key. Provisioned keys => reproducible anchor; ephemeral (local) keys => a
+    # valid log the agent can still fetch, but it must pin the ephemeral anchor
+    # to verify off-line. The log never names its own root: verification requires
+    # the operator-pinned anchor PEM.
+    trust_log = build_bootstrap_log(authority.signing_key(),
+                                    signer_id=authority.signer_id)
 
     def require_key(request: Request) -> None:
         _require_key(request, control_key)
@@ -309,10 +318,24 @@ def create_app() -> FastAPI:
     @app.get("/authority/public-key")
     def authority_public_key():
         """Return the evidence-domain public key so callers can verify
-        attestations off-line (independent of the frozen gateway keyring)."""
-        return {"signer_id": authority.signer_id,
-                "algorithm": "ed25519",
-                "public_key_pem": authority.public_pem().decode("utf-8")}
+        attestations off-line (independent of the frozen gateway keyring).
+
+        ADR 34: also returns the trust log so a caller can verify the key is
+        anchored (not trust-on-first-fetch). Off-line verification still requires
+        the operator-pinned anchor PEM (the log never names its own root)."""
+        return {
+            "signer_id": authority.signer_id,
+            "algorithm": "ed25519",
+            "public_key_pem": authority.public_pem().decode("utf-8"),
+            "trust_log": trust_log.as_dict(),
+        }
+
+    @app.get("/authority/trust-log")
+    def authority_trust_log():
+        """ADR 34 — evidence-authority trust log (hash-chained root/rotate/revoke
+        entries). Verify off-line against the operator-pinned anchor PEM; never
+        trusts the served root."""
+        return trust_log.as_dict()
 
     def _run_attested(graph_name: str, op: Op, scope_gate: _ScopeGate,
                       expect_hash, expect_included, expect_excluded,

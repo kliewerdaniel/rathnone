@@ -112,6 +112,11 @@ class EvidenceAuthority:
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
         )
 
+    def signing_key(self) -> Ed25519PrivateKey:
+        """The held private key (used to build the ADR 34 trust-log bootstrap
+        entry; the substrate never exposes it over the wire)."""
+        return self._sk
+
     def sign(self, record: EvidenceRecord) -> Attestation:
         h = record.deterministic_hash()
         sig = self._sk.sign(h.encode("utf-8"))
