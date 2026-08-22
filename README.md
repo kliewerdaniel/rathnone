@@ -311,7 +311,7 @@ Full API surface is in `src/service/app.py`; the console UI lives in `console/`.
 | 38 | Live cross-surface attestation consumer (gateway key endpoint + verify-live) | RATIFIED + IMPLEMENTED |
 | 39 | Eval suite: 7,056-point decision sweep + 5,000-vector blind adversary harness, 0 false accepts/auths | RATIFIED + IMPLEMENTED |
 | 40 | Knowledge-layer source corroboration (distinct-origin quorum; ADR 24 analogue at the evidence plane) | RATIFIED + IMPLEMENTED |
-| 41 | Agent-Harness Authority Binding (Hermes + Codex sub-agents as a `decide()` consumer) | DRAFT — awaiting ratification |
+| 41 | Agent-Harness Authority Binding (Hermes + Codex sub-agents as a `decide()` consumer) | RATIFIED + IMPLEMENTED |
 
 Full doc map: `docs/00-INDEX.md`.
 

@@ -36,6 +36,7 @@ from .capabilities import (
     CAP_FIN_TRADE_EXECUTE,
     CAP_FIN_TREASURY_REBALANCE,
     CAP_FIN_CHAIN_SETTLE,
+    CAP_FIN_AGENT_HARNESS_EXECUTE,
 )
 
 # The single source of truth: every registered finance surface, as a
@@ -44,6 +45,9 @@ REGISTERED_CAPABILITIES: tuple[tuple[str, str], ...] = (
     ("rathnone/trade-execute", CAP_FIN_TRADE_EXECUTE),
     ("rathnone/treasury-rebalance", CAP_FIN_TREASURY_REBALANCE),
     ("rathnone/chain-settle", CAP_FIN_CHAIN_SETTLE),
+    # ADR 40: the agent harness (Hermes + Codex sub-agents) joins as an 8th
+    # consumer. No substrate behavior added — same decide() path as the trio.
+    ("rathnone/agent-harness-execute", CAP_FIN_AGENT_HARNESS_EXECUTE),
 )
 
 # A default operator identity template; the grant's scope is always bound to the

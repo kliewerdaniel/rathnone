@@ -52,6 +52,7 @@
 | `38-LIVE-CROSS-SURFACE-CONSUMER.md` | ADR 38 RATIFIED+IMPLEMENTED: live cross-surface attestation consumer — gateway `GET /operator/public-key` + `surface_attest verify-live` checks the manifest against BOTH running surfaces |
 | `39-EVAL-SUITE.md` | ADR 39 RATIFIED+IMPLEMENTED: Phase 6 eval — 7,056-point decision sweep + 5,000-vector blind adversary harness, 0 false accepts/auths |
 | `40-KNOWLEDGE-POISON-GUARD.md` | ADR 40 RATIFIED+IMPLEMENTED: knowledge-layer source corroboration (the ADR 24 analogue at the evidence plane) — distinct-origin quorum guards against sybil provenance / one-principal fabrication |
+| `41-AGENT-HARNESS-AUTHORITY.md` | ADR 41 RATIFIED+IMPLEMENTED: bind the agent harness (Hermes + Codex sub-agents) as an 8th `decide()` consumer — fail-closed gate + operator `/safety/halt` stops the loop |
 
 ## Planned folder layout (target, not yet created)
 

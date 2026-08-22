@@ -750,4 +750,39 @@ def reconciliation(tenant_id: str, _: None = Depends(require_api_key)):
     return {"tenant_id": tenant_id, **summarize_reconciliation(t.audit())}
 
 
+# --- ADR 40: agent-harness authority binding ---------------------------------
+# The harness (Hermes + Codex sub-agents) asks the control plane whether a
+# consequential action may be applied. It is the 8th registered consumer of the
+# SAME frozen decide() spine (see src/finance/registry.py). Fail-closed: any
+# unverifiable state refuses rather than running open.
+from .harness_auth import evaluate_harness_action
+
+
+@app.post("/harness/authorize")
+def harness_authorize(
+    body: dict,
+    _: None = Depends(require_api_key),
+):
+    """ADR 40: gate a harness apply-action against the control plane.
+
+    Body may carry ``{"policy_allow": bool, "human_override": bool}``. Returns
+    ``{decision, reason, breaker_open, dormant}``. The harness consults this
+    before applying a patch / commit / destructive command, and refuses on
+    anything other than ``ALLOW``.
+    """
+    policy_allow = bool(body.get("policy_allow", True))
+    human_override = bool(body.get("human_override", False))
+    verdict = evaluate_harness_action(
+        policy_allow=policy_allow,
+        human_override=human_override,
+        breaker_open=_breaker.is_open,
+    )
+    return {
+        "decision": verdict.decision,
+        "reason": verdict.reason,
+        "breaker_open": verdict.breaker_open,
+        "dormant": verdict.dormant,
+    }
+
+
 __all__ = ["app", "_registry", "_meters"]

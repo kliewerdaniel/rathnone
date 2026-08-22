@@ -100,7 +100,7 @@ def test_same_policy_same_verdict_across_surfaces(gov):
         R.decide_registered(lab, cap, policy_allow=True, human=False, gov=gov).verdict
         for lab, cap in R.REGISTERED_CAPABILITIES
     ]
-    assert verdicts == ["AUTO", "AUTO", "AUTO"]
+    assert verdicts == ["AUTO"] * len(R.REGISTERED_CAPABILITIES)
 
 
 # --- SC4 proof hook: a 4th surface added to the table is auto-covered --------
