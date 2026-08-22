@@ -51,7 +51,7 @@ from .attest import (
     generate_keypair,
     verify_attestation,
 )
-from .authority import build_bootstrap_log
+from .authority import build_bootstrap_log, append_rotate, _pem_fingerprint
 from .compiler import compile_query
 from .executor import EvidenceRecord, KnowledgeGraph, QueryExecutor
 from .loader import graph_from_skc_artifact
@@ -169,6 +169,11 @@ def create_app() -> FastAPI:
     # root). Operator can later replay it to prove which record hash was served
     # to which agent under which scope -- and detect dropped entries.
     witness_log: WitnessLog = WitnessLog(authority_id=authority.signer_id)
+    # ADR 36: the trust-log seq + anchor fingerprint of the key currently
+    # signing witness entries. Advances on /authority/rotate so each entry is
+    # cryptographically bound to the exact evidence key that served it.
+    current_key_seq: int = 0
+    current_key_fingerprint: str = _pem_fingerprint(authority.public_pem())
 
     def require_key(request: Request) -> None:
         _require_key(request, control_key)
@@ -344,6 +349,40 @@ def create_app() -> FastAPI:
         trusts the served root."""
         return trust_log.as_dict()
 
+    @app.post("/authority/rotate")
+    def rotate_evidence_key(_: None = Depends(require_key)):
+        """ADR 36 — rotate the evidence-domain signing key LIVE, without a
+        redeploy.
+
+        Appends a signed ``rotate`` entry to the ADR 34 trust log (signed by the
+        CURRENT in-force key, so only a key the chain already trusts can
+        authorize its successor), then atomically swaps the in-memory signing
+        authority to the freshly-generated key. Every witness entry served AFTER
+        the rotation binds to the new key's ``key_seq`` / fingerprint; entries
+        served BEFORE it remain bound to the old key and still verify under it
+        (rotation-aware audit, see ``verify_witness_log_anchored``).
+
+        Fail-closed: the new key is only adopted if the rotate entry is
+        well-formed; the prior key keeps signing until the swap. The endpoint is
+        gated by the control-plane key (no-op when auth is not enforced).
+        """
+        nonlocal authority, trust_log, current_key_seq, current_key_fingerprint
+        new_sk, _new_pub = generate_keypair()
+        new_authority = EvidenceAuthority.from_pem(
+            authority.signer_id, new_sk)
+        trust_log = append_rotate(
+            trust_log, new_authority.signing_key(),
+            authority.signing_key(), signer_id=authority.signer_id)
+        authority = new_authority
+        current_key_seq = trust_log.entries[-1].seq
+        current_key_fingerprint = _pem_fingerprint(authority.public_pem())
+        # Subsequent witness entries bind to the new key's trust-log seq.
+        return {
+            "rotated": True,
+            "current_key_seq": current_key_seq,
+            "authority_id": authority.signer_id,
+        }
+
     @app.get("/witness/log")
     def witness_log_endpoint():
         """ADR 35 — evidence-serving witness log. A tamper-evident, hash-chained,
@@ -358,13 +397,15 @@ def create_app() -> FastAPI:
                          out: dict) -> None:
         """ADR 35: record that this attested query was served. Binds the query
         hash, the served record hash, the (scope) agent id, and the enforced
-        capabilities into the tamper-evident witness log."""
+        capabilities into the tamper-evident witness log. ADR 36: also binds the
+        entry to the CURRENT evidence key (key_seq + fingerprint) so it stays
+        verifiable after a rotation."""
         from .scope import nl_binding_bytes, op_body_hash, body_hash_of
         rec = EvidenceRecord.from_dict(out)
         scope = scope_gate.scope
         agent_id = scope.agent_id if scope is not None else "<unscoped>"
         caps = list(scope.capabilities) if scope is not None else ["<allow-all>"]
-        nonlocal witness_log
+        nonlocal witness_log, current_key_seq, current_key_fingerprint
         witness_log = append_entry(
             witness_log,
             query_hash=query_hash,
@@ -373,6 +414,8 @@ def create_app() -> FastAPI:
             capabilities=caps,
             sk=authority.signing_key(),
             authority_id=authority.signer_id,
+            key_seq=current_key_seq,
+            key_fingerprint=current_key_fingerprint,
         )
 
     def _run_attested(graph_name: str, op: Op, scope_gate: _ScopeGate,

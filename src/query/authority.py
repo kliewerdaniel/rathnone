@@ -294,6 +294,36 @@ def verify_trust_log(log: AuthorityLog, anchor_pem: bytes) -> tuple[bool, Option
     return True, None
 
 
+def trusted_key_for_seq(log: AuthorityLog, *, seq: int,
+                        fingerprint: Optional[str] = None) -> Optional[str]:
+    """Resolve the trusted evidence key introduced by trust-log entry ``seq``.
+
+    Used by the ADR 36 rotation-aware witness verification: a served witness
+    entry is bound to ``(key_seq, key_fingerprint)``; this returns the PEM the
+    operator should use to verify that entry's signature. Returns ``None`` if:
+
+      * ``seq`` is out of range (the entry claims a key the chain never
+        introduced);
+      * the entry at ``seq`` is a ``revoke`` (a revoked key is not a trusted
+        signing key -- nothing should be signed under it after revocation);
+      * a non-empty ``fingerprint`` is supplied and does not match the entry's
+        PEM fingerprint (defends against a witness entry naming a ``seq`` whose
+        key was rotated, then edited to point at a different fingerprint).
+
+    The bootstrap entry (seq 0) carries the anchor key. A ``rotate`` entry
+    carries the newly-trusted key. The result is the PEM string (public key),
+    suitable for ``load_public_key(...)``.
+    """
+    if seq < 0 or seq >= len(log.entries):
+        return None
+    entry = log.entries[seq]
+    if entry.action == "revoke":
+        return None
+    if fingerprint is not None and _pem_fingerprint(entry.pem.encode("utf-8")) != fingerprint:
+        return None
+    return entry.pem
+
+
 __all__ = [
     "AuthorityEntry",
     "AuthorityLog",
@@ -301,6 +331,7 @@ __all__ = [
     "append_rotate",
     "append_revoke",
     "verify_trust_log",
+    "trusted_key_for_seq",
     "sign_entry",
     "_pem_fingerprint",
     "ALGORITHM_LOG",

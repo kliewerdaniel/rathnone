@@ -35,6 +35,7 @@ from typing import Any, Optional
 from .algebra import Op
 from .attest import Attestation, EvidenceAuthority, verify_attestation
 from .executor import EvidenceRecord
+from .authority import AuthorityLog
 
 
 # A scope can be supplied as a QueryScope, its .as_dict() dict, or a JSON string.
@@ -148,6 +149,35 @@ class KnowledgeAgent:
         self._public_pem = current_pem.encode("utf-8")
         return current_pem == log.current_pem()
 
+    def rotate_authority(self) -> dict:
+        """ADR 36 — drive a LIVE evidence-key rotation on the service (no
+        redeploy). The service appends a signed ``rotate`` entry to its ADR 34
+        trust log and swaps in a fresh signing key; subsequently served witness
+        entries bind to the new key. Returns the raw service response
+        (``rotated``, ``current_key_seq``, ``authority_id``) so the caller can
+        reason about the new trust-log tip.
+
+        After rotation, re-fetch the trust log and re-run ``verify_authority``
+        (anchored against the SAME pinned anchor) to confirm the new tip verifies
+        and ``fetch_witness_log`` still verifies rotation-aware.
+        """
+        r = self._client.post(
+            "/authority/rotate", headers=self._headers())
+        if r.status_code >= 400:
+            raise RuntimeError(
+                f"/authority/rotate -> {r.status_code}: {r.text}")
+        return r.json()
+
+    def fetch_trust_log(self) -> "AuthorityLog":
+        """ADR 34/36 — fetch the service's evidence-authority trust log as a
+        typed ``AuthorityLog`` (hash-chained anchor/rotate/revoke entries)."""
+        from .authority import AuthorityLog as _AL
+        r = self._client.get("/authority/trust-log")
+        if r.status_code >= 400:
+            raise RuntimeError(
+                f"/authority/trust-log -> {r.status_code}: {r.text}")
+        return _AL.from_dict(r.json())
+
     def fetch_witness_log(self) -> dict:
         """ADR 35 — fetch the service's evidence-serving witness log (raw JSON)."""
         r = self._client.get("/witness/log")
@@ -162,10 +192,31 @@ class KnowledgeAgent:
         signed by the evidence key the operator already trusts. Returns True only
         if every entry is a valid signature over a contiguous hash chain rooted
         at the first entry.
+
+        Single-key path (every entry signed by the SAME pinned key). For
+        rotation-aware verification across a key rotation, use
+        ``verify_witness_log_anchored()`` (ADR 36).
         """
         from .witness import WitnessLog, verify_witness_log as _verify
         log = WitnessLog.from_dict(self.fetch_witness_log())
         ok, _reason = _verify(log, evidence_pem)
+        return ok
+
+    def verify_witness_log_anchored(self, trust_log: "AuthorityLog") -> bool:
+        """ADR 36 — verify the served witness log off-line, rotation-aware,
+        against an ADR 34 evidence-authority trust log (already verified against
+        the operator-pinned anchor via ``verify_authority()``). Each witness
+        entry is resolved to the trusted key named by its (signed) ``key_seq`` /
+        ``key_fingerprint``, so entries served under a rotated-out key still
+        verify under that old key and entries served under the rotated-in key
+        verify under the new one.
+
+        Returns True only if the hash chain is intact AND every entry verifies
+        under the exact evidence key its signed binding names.
+        """
+        from .witness import WitnessLog, verify_witness_log_anchored as _verify
+        log = WitnessLog.from_dict(self.fetch_witness_log())
+        ok, _reason = _verify(log, trust_log)
         return ok
 
     # --- querying -------------------------------------------------------

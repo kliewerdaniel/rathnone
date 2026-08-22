@@ -223,3 +223,78 @@ def test_adr34_35_authority_and_witness_audit_over_wire(live):
     assert op_res.raw["deterministic_hash"] in served_hashes
     assert nl_res.raw["deterministic_hash"] in served_hashes
     client.close()
+
+
+def test_adr36_live_key_rotation_keeps_witness_audit_verifiable(live):
+    """ADR 36 — rotate the evidence key LIVE (no redeploy) and prove the
+    witness log stays verifiable ROTATION-AWARE, over a real socket.
+
+    Before rotation, under the anchor key, we serve attested queries and they
+    land in the witness log bound to key_seq=0. After rotation, new queries land
+    bound to key_seq=1 (the rotated-in key). The rotation-aware verify resolves
+    EACH entry to its bound key via the ADR 34 trust log, so old entries still
+    verify under the rotated-out key and new ones under the rotated-in key.
+
+    The single-key verify must now REJECT (the log spans two keys), confirming
+    the anchored path is what survives rotation. And the new trust-log tip must
+    still verify against the SAME operator-pinned anchor (no TOFU).
+    """
+    base, op_authority, evidence_pub = live
+    client = httpx.Client(base_url=base, timeout=5.0)
+    agent = KnowledgeAgent(client)
+    path = os.environ.get("RATHNONE_SKC_ARTIFACT", _SKC_DEFAULT)
+    agent.load_graph(path, graph_name="skc")
+
+    # Serve ONE attested query BEFORE rotation (anchor key, key_seq=0).
+    op = {"kind": "MATCH", "arg": "learning"}
+    pre_scope = _mint(op_authority, graph_name="skc", agent_id="auditor",
+                      body_hash=op_body_hash(Op.from_dict(op).to_dict()),
+                      capabilities=[], max_results=50, nonce=31)
+    agent.set_scope(pre_scope)
+    pre_res = agent.query_op(op, graph_name="skc", attested=True)
+    agent.set_scope(None)
+    assert pre_res.signature_ok is True
+
+    # ADR 34: anchor still verifies; capture the pre-rotation trust-log tip.
+    assert agent.verify_authority(evidence_pub) is True
+    pre_trust = agent.fetch_trust_log()
+    assert len(pre_trust.entries) == 1  # bootstrap only
+
+    # ROTATE the evidence key live.
+    rot = agent.rotate_authority()
+    assert rot.get("rotated") is True
+    assert rot.get("current_key_seq") == 1
+
+    # ADR 34: the NEW trust-log tip must STILL verify against the SAME pinned
+    # anchor (rotation authorized by the prior key, not a forged root). This
+    # also refreshes the agent's pinned evidence key to the rotated-in key, so
+    # the next off-line attestation verify uses the CURRENT key.
+    assert agent.verify_authority(evidence_pub) is True
+    post_trust = agent.fetch_trust_log()
+    assert len(post_trust.entries) == 2  # bootstrap + rotate
+
+    # Serve ONE attested query AFTER rotation (new key, key_seq=1).
+    post_scope = _mint(op_authority, graph_name="skc", agent_id="auditor",
+                       body_hash=op_body_hash(Op.from_dict(op).to_dict()),
+                       capabilities=[], max_results=50, nonce=32)
+    agent.set_scope(post_scope)
+    post_res = agent.query_op(op, graph_name="skc", attested=True)
+    agent.set_scope(None)
+    assert post_res.signature_ok is True
+
+    # ADR 36: rotation-aware verify of the witness log (spans both keys).
+    assert agent.verify_witness_log_anchored(post_trust) is True
+    # The served record hashes from BOTH before/after rotation are present.
+    served = agent.fetch_witness_log()
+    entries = served.get("entries", [])
+    served_hashes = {e.get("record_hash") for e in entries}
+    assert pre_res.raw["deterministic_hash"] in served_hashes
+    assert post_res.raw["deterministic_hash"] in served_hashes
+    # Each entry is bound to its key_seq (0 before, 1 after).
+    key_seqs = {e.get("key_seq") for e in entries}
+    assert 0 in key_seqs and 1 in key_seqs
+
+    # The single-key verify must now REJECT the rotated log (by design).
+    single_ok = agent.verify_witness_log(evidence_pub)
+    assert single_ok is False
+    client.close()

@@ -223,6 +223,42 @@ def main() -> int:
             nl.raw["deterministic_hash"] in served_hashes
             and op_res.raw["deterministic_hash"] in served_hashes
         )
+
+        # 7. ADR 36 LIVE key rotation (no redeploy) + rotation-aware audit.
+        #    Rotate the evidence key over the wire, then prove:
+        #      - the NEW trust-log tip still verifies against the SAME pinned
+        #        anchor (rotation was authorized by the prior key, not a forged
+        #        root), which also refreshes the agent's pinned key;
+        #      - re-serving an attested query after rotation still verifies
+        #        off-line (under the rotated-in key);
+        #      - the witness log verifies ROTATION-AWARE (spans both keys),
+        #        while the single-key verify now REJECTS it (by design).
+        rot = agent.rotate_authority()
+        results["adr36_rotate_live_succeeds"] = bool(rot.get("rotated")) \
+            and rot.get("current_key_seq") == 1
+        results["adr34_authority_anchor_verifies_post_rotate"] = \
+            agent.verify_authority(anchor_pem)
+        post_trust = agent.fetch_trust_log()
+        # Re-serve an attested op query under the rotated-in key.
+        rot_scope = _mint_scope(
+            op_authority, graph_name="skc", agent_id="live-agent",
+            body_hash=op_body_hash(Op.from_dict(op).to_dict()),
+            capabilities=[], max_results=1000, nonce=5)
+        agent.set_scope(rot_scope)
+        rot_res = agent.query_op(op, graph_name="skc", attested=True)
+        agent.set_scope(None)
+        results["adr36_post_rotation_attestation_verifies"] = \
+            bool(rot_res.signature_ok)
+        # Rotation-aware witness verify (spans bootstrap seq 0 + rotate seq 1).
+        results["adr36_witness_log_anchored_verifies"] = \
+            agent.verify_witness_log_anchored(post_trust)
+        served2 = agent.fetch_witness_log()
+        entries2 = served2.get("entries", [])
+        key_seqs = {e.get("key_seq") for e in entries2}
+        results["adr36_witness_spans_two_keys"] = (0 in key_seqs and 1 in key_seqs)
+        # The single-key verify must now REJECT the rotated log (by design).
+        results["adr36_singlekey_verify_rejects_rotated"] = \
+            (agent.verify_witness_log(anchor_pem) is False)
     finally:
         stop.set()
         t.join(timeout=5.0)
