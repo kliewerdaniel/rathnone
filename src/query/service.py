@@ -215,20 +215,27 @@ def create_app() -> FastAPI:
         }
 
     def _run(graph_name: str, op: Op, scope_gate: _ScopeGate,
-             expect_hash, expect_included, expect_excluded) -> dict:
+             expect_hash, expect_included, expect_excluded,
+             *, body_binding_done: bool = False) -> dict:
         g = graphs.get(graph_name)
         if g is None:
             raise HTTPException(status_code=404,
                                 detail=f"graph not loaded: {graph_name}")
         # ADR 32: if a scope is in force, verify the body binding and enforce
         # its capability + size constraints fail-closed.
+        # For /op* routes the scope binds to the canonical Op plan, so the
+        # binding is checked here. For /nl* routes the scope binds to the RAW
+        # text (F3) and the binding was already verified in the handler against
+        # req.text -- so it must NOT be re-checked against the compiled Op (the
+        # compiled plan's hash never equals a text-bound scope's body_hash).
         scope = scope_gate.scope
         if scope is not None:
-            want = op_body_hash(op.to_dict())
-            if scope.body_hash != want:
-                raise HTTPException(
-                    status_code=403,
-                    detail="scope body_hash does not bind to this query plan")
+            if not body_binding_done:
+                want = op_body_hash(op.to_dict())
+                if scope.body_hash != want:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="scope body_hash does not bind to this query plan")
             rec_pre = QueryExecutor(g).execute(op)
             ok, reason = enforce_constraints(
                 op, scope, included=len(rec_pre.included),
@@ -292,7 +299,8 @@ def create_app() -> FastAPI:
         # Echo the compiled plan so the caller can audit what the engine
         # executed (the model constructs, the engine executes).
         out = _run(req.graph_name, op, sg, req.expect_hash,
-                   req.expect_included, req.expect_excluded)
+                   req.expect_included, req.expect_excluded,
+                   body_binding_done=True)
         out["compiled_op"] = op.to_dict()
         return out
 
@@ -307,9 +315,11 @@ def create_app() -> FastAPI:
                 "public_key_pem": authority.public_pem().decode("utf-8")}
 
     def _run_attested(graph_name: str, op: Op, scope_gate: _ScopeGate,
-                      expect_hash, expect_included, expect_excluded) -> dict:
+                      expect_hash, expect_included, expect_excluded,
+                      *, body_binding_done: bool = False) -> dict:
         out = _run(graph_name, op, scope_gate, expect_hash,
-                   expect_included, expect_excluded)
+                   expect_included, expect_excluded,
+                   body_binding_done=body_binding_done)
         rec = EvidenceRecord.from_dict(out)
         att = authority.sign(rec)
         out["attestation"] = att.as_dict()
@@ -335,7 +345,8 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400,
                                 detail=f"could not compile query: {exc}")
         out = _run_attested(req.graph_name, op, sg, req.expect_hash,
-                            req.expect_included, req.expect_excluded)
+                            req.expect_included, req.expect_excluded,
+                            body_binding_done=True)
         out["compiled_op"] = op.to_dict()
         return out
 
