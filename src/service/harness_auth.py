@@ -1,4 +1,4 @@
-"""ADR 40 — agent-harness authority binding.
+"""ADR 41 — agent-harness authority binding.
 
 The local agent harness (Hermes dispatching Codex CLI sub-agents) consults
 Rathnone's control plane before applying any consequential action (patch / commit

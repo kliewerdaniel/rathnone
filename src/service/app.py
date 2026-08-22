@@ -750,7 +750,7 @@ def reconciliation(tenant_id: str, _: None = Depends(require_api_key)):
     return {"tenant_id": tenant_id, **summarize_reconciliation(t.audit())}
 
 
-# --- ADR 40: agent-harness authority binding ---------------------------------
+# --- ADR 41: agent-harness authority binding ---------------------------------
 # The harness (Hermes + Codex sub-agents) asks the control plane whether a
 # consequential action may be applied. It is the 8th registered consumer of the
 # SAME frozen decide() spine (see src/finance/registry.py). Fail-closed: any
@@ -763,7 +763,7 @@ def harness_authorize(
     body: dict,
     _: None = Depends(require_api_key),
 ):
-    """ADR 40: gate a harness apply-action against the control plane.
+    """ADR 41: gate a harness apply-action against the control plane.
 
     Body may carry ``{"policy_allow": bool, "human_override": bool}``. Returns
     ``{decision, reason, breaker_open, dormant}``. The harness consults this

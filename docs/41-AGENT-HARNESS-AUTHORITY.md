@@ -114,17 +114,29 @@ Unknown / unverifiable control → fail closed (treat as not-yet-provisioned,
 refuse consequential actions). This keeps the integration honest as the plane
 evolves rather than ossifying today's capability set.
 
-## 7. Test strategy
+## 7. Test strategy (delivered)
 
-- Mirror `test_registry.py`: one parameterized case covers the harness capability
-  (AUTO / HUMAN / BLOCKED against `decide()`).
-- New: `test_harness_gate_fail_closed.py` — asserts DENY_OPEN when the control
-  plane is unreachable / key absent / `decide()` BLOCKED.
-- New: `test_harness_respects_halt.py` — trips `/safety/halt`, asserts the harness
-  loop stops regardless of `decide()` verdict.
-- Live-transport gate (ADR 33 discipline): exercise the gate over a real TCP
-  boundary (`uvicorn` + `httpx`) with the control plane actually running, not
-  `TestClient` only.
+- `tests/test_harness_gate.py` — mirrors `test_registry.py`: the parameterized
+  generality suite auto-covers the harness capability (AUTO / HUMAN / BLOCKED
+  against `decide()`). Plus fail-closed unit tests: DENY_OPEN when the key is
+  absent under enforcement, BLOCKED on policy deny and on HUMAN, and BLOCKED on
+  breaker-open.
+- `tests/test_harness_gate_live_tcp.py` — **real-TCP** gate (ADR 33 discipline):
+  boots the actual `src.service.app` over a uvicorn socket and drives it with a
+  real `httpx.Client` (not `TestClient`). Asserts (a) no-key POST `/harness/
+  authorize` is 401, (b) valid `Bearer` + AUTO policy returns 200 `ALLOW` with the
+  documented `{decision, reason, breaker_open, dormant}` shape, and (c) a live
+  `POST /safety/halt` over the wire flips the breaker the harness endpoint reads,
+  so the **same** `/harness/authorize` call now returns `BLOCKED` over TCP —
+  proving the operator panic button genuinely stops the harness loop. `/
+  safety/resume` restores `ALLOW`.
+
+Note: the harness *function* is unit-tested for every resolution path; the live
+TCP test proves the *endpoint* honors it across a network boundary and that the
+operator halt is effective over the wire. The "stop a live background Codex
+sub-agent" claim is validated at the control-plane boundary (the harness polls
+`/harness/authorize` before each apply and refuses on anything but `ALLOW`), not
+by spawning a real Codex process in CI.
 
 ## 8. Open questions (for ratification)
 

@@ -1,4 +1,4 @@
-"""ADR 40 — harness authority gate tests.
+"""ADR 41 — harness authority gate tests.
 
 Fail-closed by construction: any unverifiable state must refuse (DENY_OPEN /
 BLOCKED), never run open. The registry case confirms the harness capability is
