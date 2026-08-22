@@ -104,7 +104,8 @@ class HarnessMemory:
                  embed_url: str = "http://127.0.0.1:11434/api/embed",
                  model: str = "nomic-embed-text",
                  clock=lambda: 0):
-        self.uri = uri or os.environ.get("RATHNONE_HARNESS_MEMORY_URI") or ""
+        self.uri = uri if uri is not None else (
+            os.environ.get("RATHNONE_HARNESS_MEMORY_URI") or "")
         self.user = user
         self.password = password
         self.embed_url = embed_url

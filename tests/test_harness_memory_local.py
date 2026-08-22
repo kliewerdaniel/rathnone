@@ -90,3 +90,39 @@ def test_local_graphrag_warm_beats_cold_and_quarantines():
         assert "ADR-43" in adrs
     finally:
         mem.close()
+
+
+def _run_living_loop(mem: HarnessMemory):
+    """Shared: drive the living consumer and return its result map."""
+    from examples.harness_memory_loop import MemoryBoundLoop, _MEMORY_PLAN
+    loop = MemoryBoundLoop(mem, session_id="test-living")
+    loop.anchor()
+    loop.run(_MEMORY_PLAN)
+    return loop
+
+
+def test_living_consumer_gates_on_drift_in_memory():
+    """The memory loop blocks an off-domain action and ALLOWs on-domain ones."""
+    mem = HarnessMemory(uri="")  # in-memory fallback, no infra needed
+    loop = _run_living_loop(mem)
+    # On-domain actions allowed, off-domain "deploy fleet to aws" quarantined.
+    assert loop.decisions["review harness signed-execute gate ADR-43"] is True
+    assert loop.decisions["record investigation into local Neo4j memory"] is True
+    assert loop.decisions["deploy fleet to aws us-east-1 production"] is False
+    # Verbatim ADR-43 fact round-tripped into memory.
+    adrs = [f.value for f in mem.session_facts("test-living") if f.kind == "adr"]
+    assert "ADR-43" in adrs
+    mem.close()
+
+
+@pytest.mark.skipif(not INFRA_UP, reason="local Neo4j/Ollama not available")
+def test_living_consumer_gates_on_drift_over_real_substrate():
+    mem = HarnessMemory(uri=MEM_URI)
+    try:
+        loop = _run_living_loop(mem)
+        assert loop.decisions["deploy fleet to aws us-east-1 production"] is False
+        adrs = [f.value for f in mem.session_facts("test-living") if f.kind == "adr"]
+        assert "ADR-43" in adrs
+    finally:
+        mem.close()
+
