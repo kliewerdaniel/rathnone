@@ -60,6 +60,10 @@ from .attest import (
     load_public_key,
     verify_attestation,
 )
+from .agent import (
+    KnowledgeAgent,
+    QueryResult,
+)
 from .service import (
     create_app,
     app as query_service_app,
@@ -99,6 +103,8 @@ __all__ = [
     "load_private_key",
     "load_public_key",
     "verify_attestation",
+    "KnowledgeAgent",
+    "QueryResult",
     "create_app",
     "query_service_app",
 ]
