@@ -24,7 +24,11 @@ from typing import Optional
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from ..finance.registry import CAP_FIN_AGENT_HARNESS_EXECUTE, decide_registered
+from ..finance.capabilities import (
+    CAP_FIN_AGENT_HARNESS_EXPLORE,
+    CAP_FIN_AGENT_HARNESS_EXECUTE,
+)
+from ..finance.registry import decide_registered
 from exchange.epistemic_adapter import GovernanceAuthority
 
 
@@ -52,6 +56,8 @@ def _api_key_present() -> bool:
 
 def evaluate_harness_action(
     *,
+    kind: str = "apply",
+    pre_approved: bool = False,
     policy_allow: bool = True,
     human_override: bool = False,
     breaker_open: bool = False,
@@ -61,12 +67,35 @@ def evaluate_harness_action(
 ) -> HarnessVerdict:
     """Decide whether the harness may apply a consequential action.
 
+    ``kind`` selects the harness capability (ADR 42 capability split):
+      - ``"explore"`` -> read-only research (read/search/list/diff-for-inspect).
+        Resolves to ``AUTO`` -> ``ALLOW`` (silent; no operator prompt).
+      - ``"apply"``   -> consequential apply/commit/destructive. Resolves to
+        ``HUMAN`` unless the operator has acknowledged it via ``pre_approved``,
+        in which case it is re-requested as ``AUTO`` -> ``ALLOW``.
+
+    ``pre_approved`` is NOT a local bypass: it re-requests the verdict with
+    ``require_human_approval=False`` so the control plane re-verifies the
+    operator's acknowledgement. Fail-closed default is ``pre_approved=False``.
+
     ``enforce`` overrides the live RATHNONE_ENFORCE_AUTH read (lets tests force
     either posture without env gymnastics). ``api_key`` overrides the live
     RATHNONE_API_KEY presence check (so fail-closed tests don't depend on the
     ambient environment). ``breaker_open`` lets the caller pass the live /safety
     state (the endpoint reads it from the running breaker).
     """
+    if kind not in ("explore", "apply"):
+        raise ValueError(f"kind must be 'explore' or 'apply', got {kind!r}")
+    capability = (
+        CAP_FIN_AGENT_HARNESS_EXPLORE if kind == "explore"
+        else CAP_FIN_AGENT_HARNESS_EXECUTE
+    )
+    # ADR 42: explore is AUTO; apply is HUMAN unless the operator pre-approved
+    # (re-requested through the control plane, not honored locally). Pre-approval
+    # flips only the HUMAN acknowledgement; it never overrides a policy DENY
+    # (a capability outside the allowlist stays HUMAN/BLOCKED).
+    human = human_override or (kind == "apply" and not pre_approved)
+
     enforced = _control_plane_enforced() if enforce is None else enforce
 
     # Dev posture: ADR 17 unenforced -> log DORMANT, allow local scratch.
@@ -92,13 +121,14 @@ def evaluate_harness_action(
             breaker_open=True,
         )
 
-    # Step 3: frozen decide() through the registry (8th consumer).
+    # Step 3: frozen decide() through the registry (8th/9th/10th consumer).
     gov = gov or GovernanceAuthority(Ed25519PrivateKey.generate())
     d = decide_registered(
-        "rathnone/agent-harness-execute",
-        CAP_FIN_AGENT_HARNESS_EXECUTE,
+        "rathnone/agent-harness-explore" if kind == "explore"
+        else "rathnone/agent-harness-execute",
+        capability,
         policy_allow=policy_allow,
-        human=human_override,
+        human=human,
         gov=gov,
     )
     if d.verdict == "AUTO":

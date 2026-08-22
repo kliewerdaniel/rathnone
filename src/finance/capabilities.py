@@ -16,9 +16,11 @@ CAP_FIN_TRADE_EXECUTE = "rathnone.trade_execute"
 CAP_FIN_TREASURY_REBALANCE = "rathnone.treasury_rebalance"
 CAP_FIN_CHAIN_SETTLE = "rathnone.chain_settle"
 
-# ADR 40: the local agent harness (Hermes + Codex sub-agents) registers as an
-# 8th consumer of the SAME frozen decide() spine, so consequential harness
-# actions (apply patch / commit / destructive command) are gated fail-closed.
+# ADR 41: the local agent harness (Hermes + Codex sub-agents) registers as a
+# consumer of the SAME frozen decide() spine. ADR 42 splits it into two surfaces:
+#   * EXPLORE — read-only research (read/search/list/diff-for-inspection). AUTO.
+#   * EXECUTE — consequential apply/commit/destructive. HUMAN (operator prompts).
+CAP_FIN_AGENT_HARNESS_EXPLORE = "rathnone.agent_harness_explore"
 CAP_FIN_AGENT_HARNESS_EXECUTE = "rathnone.agent_harness_execute"
 
 # Reserved for the chain-agnostic settlement binding (B6). Not yet in the
@@ -29,6 +31,7 @@ __all__ = [
     "CAP_FIN_TRADE_EXECUTE",
     "CAP_FIN_TREASURY_REBALANCE",
     "CAP_FIN_CHAIN_SETTLE",
+    "CAP_FIN_AGENT_HARNESS_EXPLORE",
     "CAP_FIN_AGENT_HARNESS_EXECUTE",
     "CAP_FIN_CHAIN_SETTLE_EVM_L2",
 ]

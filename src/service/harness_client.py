@@ -74,14 +74,25 @@ class HarnessAuthorizer:
 
     # -- public API ---------------------------------------------------------
 
-    def may_apply(self, action: str, *, human_override: bool = False) -> bool:
+    def may_apply(self, action: str, *, kind: str = "apply",
+                  pre_approved: bool = False, human_override: bool = False) -> bool:
         """Return True only if the control plane grants an unqualified ALLOW.
+
+        ``kind`` selects the harness capability (ADR 42 split):
+          - ``"explore"`` -> read-only research; control plane returns AUTO -> allow.
+          - ``"apply"``   -> consequential; control plane returns HUMAN unless the
+            operator has acknowledged it via ``pre_approved``.
+
+        ``pre_approved`` re-requests the verdict with the HUMAN acknowledgement
+        flipped; it is re-verified by the control plane, never honored locally.
 
         Every other outcome (unreachable, malformed, BLOCKED, DENY_OPEN,
         breaker-open, or DORMANT-without-opt-in) returns False and records the
         reason on :attr:`last_reason`.
         """
-        verdict = self._query(policy_allow=True, human_override=human_override)
+        verdict = self._query(
+            policy_allow=True, human_override=human_override,
+            kind=kind, pre_approved=pre_approved)
         self.last_verdict = verdict
         self.last_reason = verdict.reason if verdict else self.last_reason
         if verdict is None:
@@ -94,12 +105,14 @@ class HarnessAuthorizer:
 
     # -- internals ----------------------------------------------------------
 
-    def _query(self, *, policy_allow: bool, human_override: bool) -> Optional[HarnessVerdict]:
+    def _query(self, *, policy_allow: bool, human_override: bool,
+               kind: str = "apply", pre_approved: bool = False) -> Optional[HarnessVerdict]:
         """Call /harness/authorize; translate to a HarnessVerdict (None = refuse)."""
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        body = {"policy_allow": policy_allow, "human_override": human_override}
+        body = {"policy_allow": policy_allow, "human_override": human_override,
+                "kind": kind, "pre_approved": pre_approved}
         attempt = 0
         last_err: Optional[str] = None
         while attempt <= self.retries:

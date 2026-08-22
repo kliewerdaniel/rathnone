@@ -121,7 +121,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 # The frozen spine is vendored at vendor/fleet_spine (pinned commit in
 # vendor/fleet_spine/PINNED_COMMIT). The venv's fleet_overlay.pth points there.
-pytest -q                       # 282 passing
+pytest -q                       # 343 passing
 
 # --- Finance Gateway ---
 RATHNONE_MAX_SETTLEMENT_VALUE_WEI=500000000000000000 \
@@ -326,7 +326,7 @@ src/
   security/           guards, operator signing, keystore, hygiene gate
   hygiene/            epistemic-hygiene / knowledge-poisoning layer
   query/              knowledge-query & evidence engine (algebra, executor, loader,
-                    compiler, attest, scope, service, agent) — ADR 27–40
+                    compiler, attest, scope, service, agent) — ADR 27–42
   config.py           all RATHNONE_* readers
 vendor/fleet_spine/   pinned, read-only snapshot of sovereign-agent-fleet
 console/              Next.js operator console

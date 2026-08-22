@@ -37,10 +37,29 @@ def test_enforced_missing_key_denies_open():
     assert "API key missing" in v.reason
 
 
-def test_enforced_with_key_and_auto_allows():
-    v = HA.evaluate_harness_action(
-        enforce=True, breaker_open=False, policy_allow=True)
+def test_explore_auto_allows_silently():
+    # ADR 42: read-only research resolves to AUTO without prompting.
+    v = HA.evaluate_harness_action(enforce=True, kind="explore", breaker_open=False)
     assert v.decision == "ALLOW"
+
+
+def test_apply_not_preapproved_blocks_and_signals_human():
+    # ADR 42: consequential apply defaults to HUMAN -> block + prompt.
+    v = HA.evaluate_harness_action(enforce=True, kind="apply", breaker_open=False)
+    assert v.decision == "BLOCKED"
+    assert "HUMAN" in v.reason
+
+
+def test_apply_preapproved_allows():
+    # ADR 42: operator acknowledged -> control plane re-verifies -> ALLOW.
+    v = HA.evaluate_harness_action(
+        enforce=True, kind="apply", pre_approved=True, breaker_open=False)
+    assert v.decision == "ALLOW"
+
+
+def test_invalid_kind_rejected():
+    with pytest.raises(ValueError):
+        HA.evaluate_harness_action(enforce=True, kind="delete_everything")
 
 
 def test_human_verdict_blocks_and_signals_prompt():

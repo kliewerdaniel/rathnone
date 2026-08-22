@@ -36,6 +36,7 @@ from .capabilities import (
     CAP_FIN_TRADE_EXECUTE,
     CAP_FIN_TREASURY_REBALANCE,
     CAP_FIN_CHAIN_SETTLE,
+    CAP_FIN_AGENT_HARNESS_EXPLORE,
     CAP_FIN_AGENT_HARNESS_EXECUTE,
 )
 
@@ -45,9 +46,14 @@ REGISTERED_CAPABILITIES: tuple[tuple[str, str], ...] = (
     ("rathnone/trade-execute", CAP_FIN_TRADE_EXECUTE),
     ("rathnone/treasury-rebalance", CAP_FIN_TREASURY_REBALANCE),
     ("rathnone/chain-settle", CAP_FIN_CHAIN_SETTLE),
-    # ADR 40: the agent harness (Hermes + Codex sub-agents) joins as an 8th
-    # consumer. No substrate behavior added — same decide() path as the trio.
+    # ADR 41: the agent harness (Hermes + Codex sub-agents) joins as a consumer
+    # of the SAME frozen decide() spine. No substrate behavior added.
     ("rathnone/agent-harness-execute", CAP_FIN_AGENT_HARNESS_EXECUTE),
+    # ADR 42: harness split into two surfaces. EXPLORE (read-only research) is
+    # AUTO; EXECUTE (consequential apply/commit/destructive) is HUMAN by default,
+    # so the operator is prompted only for state-changing actions. Both ride the
+    # same parametrized generality suite (test_registry.py auto-covers them).
+    ("rathnone/agent-harness-explore", CAP_FIN_AGENT_HARNESS_EXPLORE),
 )
 
 # A default operator identity template; the grant's scope is always bound to the

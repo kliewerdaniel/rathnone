@@ -763,16 +763,23 @@ def harness_authorize(
     body: dict,
     _: None = Depends(require_api_key),
 ):
-    """ADR 41: gate a harness apply-action against the control plane.
+    """ADR 41/42: gate a harness apply-action against the control plane.
 
-    Body may carry ``{"policy_allow": bool, "human_override": bool}``. Returns
-    ``{decision, reason, breaker_open, dormant}``. The harness consults this
-    before applying a patch / commit / destructive command, and refuses on
-    anything other than ``ALLOW``.
+    Body may carry ``{"policy_allow": bool, "human_override": bool, "kind":
+    "explore"|"apply", "pre_approved": bool}``. Returns ``{decision, reason,
+    breaker_open, dormant}``. The harness consults this before applying a
+    patch / commit / destructive command, and refuses on anything other than
+    ``ALLOW``. ``kind="explore"`` (read-only research) resolves to AUTO;
+    ``kind="apply"`` (consequential) resolves to HUMAN unless the operator
+    acknowledged it via ``pre_approved``.
     """
     policy_allow = bool(body.get("policy_allow", True))
     human_override = bool(body.get("human_override", False))
+    kind = str(body.get("kind", "apply"))
+    pre_approved = bool(body.get("pre_approved", False))
     verdict = evaluate_harness_action(
+        kind=kind,
+        pre_approved=pre_approved,
         policy_allow=policy_allow,
         human_override=human_override,
         breaker_open=_breaker.is_open,

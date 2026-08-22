@@ -164,9 +164,11 @@ makes every subsequent apply refuse — not by spawning a real Codex process in 
 
 ## 8. Open questions (for ratification)
 
-1. **Capability granularity** — one `agent_harness_execute` for all apply actions,
-   or split read-only-explore vs apply-vs-commit so `decide()` can HUMAN-gate only
-   commits? (Recommend: split later via ADR fork; start with one.)
+1. **Capability granularity** — **RESOLVED by ADR 42.** The harness is now split
+   into `rathnone.agent_harness_explore` (read-only research, AUTO/silent) and
+   `rathnone.agent_harness_execute` (consequential apply/commit/destructive,
+   HUMAN-by-default → operator prompted). `decide()` HUMAN-gates only the execute
+   surface; explore never nags.
 2. **Human verdict path** — does HUMAN mean "prompt the operator in this terminal"
    or "hard BLOCK until a signed operator command arrives"? (Recommend: prompt.)
 3. **Hygiene gate timing** — gate *before* every apply, or only on diffs > N lines?
@@ -175,6 +177,7 @@ makes every subsequent apply refuse — not by spawning a real Codex process in 
 ## 9. Exit criteria (definition of "done")
 
 - Harness capability registered + covered by `test_registry.py` green.
-- `harness_should_proceed` implemented + fail-closed tests green over real TCP.
+- `evaluate_harness_action` implemented + fail-closed tests green over real TCP.
 - `/safety/halt` observed to stop a live background Codex sub-agent.
 - ADR 41 ratified, implemented, committed (after user review).
+- **ADR 42** extends this with `explore`/`apply` capability split (see §8 Q1).

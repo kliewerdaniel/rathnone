@@ -115,19 +115,35 @@ def test_harness_endpoint_rejects_without_key_over_tcp(live_harness):
 
 
 def test_harness_endpoint_allows_with_key_over_tcp(live_harness):
-    """Enforced auth + valid key + AUTO policy => 200 ALLOW (documented shape)."""
+    """Enforced auth + valid key + AUTO policy (explore) => 200 ALLOW (shape)."""
     base = live_harness
     with httpx.Client(base_url=base, timeout=5.0) as c:
         r = c.post(
             "/harness/authorize",
             headers={"Authorization": "Bearer testkey"},
-            json={"policy_allow": True},
+            json={"policy_allow": True, "kind": "explore"},
         )
     assert r.status_code == 200
     body = r.json()
     assert {"decision", "reason", "breaker_open", "dormant"} <= set(body.keys())
     assert body["decision"] == "ALLOW"
     assert body["dormant"] is False
+
+
+def test_harness_endpoint_apply_requires_operator_over_tcp(live_harness):
+    """ADR 42: consequential apply defaults to HUMAN -> BLOCKED until approved."""
+    base = live_harness
+    with httpx.Client(base_url=base, timeout=5.0) as c:
+        headers = {"Authorization": "Bearer testkey"}
+        r = c.post("/harness/authorize", headers=headers,
+                   json={"policy_allow": True, "kind": "apply"})
+        assert r.status_code == 200
+        assert r.json()["decision"] == "BLOCKED"
+        assert "HUMAN" in r.json()["reason"]
+        # Operator acknowledges -> pre_approved flips to ALLOW.
+        ok = c.post("/harness/authorize", headers=headers,
+                    json={"policy_allow": True, "kind": "apply", "pre_approved": True})
+        assert ok.json()["decision"] == "ALLOW"
 
 
 def test_harness_endpoint_blocks_on_live_operator_halt_over_tcp(live_harness):
@@ -140,9 +156,10 @@ def test_harness_endpoint_blocks_on_live_operator_halt_over_tcp(live_harness):
     base = live_harness
     with httpx.Client(base_url=base, timeout=5.0) as c:
         headers = {"Authorization": "Bearer testkey"}
-        # Pre-halt: harness would be allowed.
+        # Pre-halt: explore would be allowed (AUTO).
         before = c.post(
-            "/harness/authorize", headers=headers, json={"policy_allow": True}
+            "/harness/authorize", headers=headers,
+            json={"policy_allow": True, "kind": "explore"}
         )
         assert before.status_code == 200
         assert before.json()["decision"] == "ALLOW"
@@ -152,9 +169,11 @@ def test_harness_endpoint_blocks_on_live_operator_halt_over_tcp(live_harness):
         assert halt.status_code == 200
         assert halt.json().get("breaker_open") is True
 
-        # Post-halt: the SAME harness endpoint must now BLOCK over the wire.
+        # Post-halt: the SAME harness endpoint must now BLOCK over the wire
+        # (explore or apply — breaker overrides everything).
         after = c.post(
-            "/harness/authorize", headers=headers, json={"policy_allow": True}
+            "/harness/authorize", headers=headers,
+            json={"policy_allow": True, "kind": "explore"}
         )
         assert after.status_code == 200
         assert after.json()["decision"] == "BLOCKED"
@@ -163,6 +182,7 @@ def test_harness_endpoint_blocks_on_live_operator_halt_over_tcp(live_harness):
         # Resume restores the harness to ALLOW.
         c.post("/safety/resume", headers=headers)
         restored = c.post(
-            "/harness/authorize", headers=headers, json={"policy_allow": True}
+            "/harness/authorize", headers=headers,
+            json={"policy_allow": True, "kind": "explore"}
         )
         assert restored.json()["decision"] == "ALLOW"

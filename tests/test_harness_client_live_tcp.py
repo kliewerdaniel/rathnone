@@ -94,30 +94,50 @@ def live_planar():
 
 
 def test_harness_authorizer_allows_with_key(live_planar):
+    # Read-only research (explore) is silent AUTO -> allow.
     _base, authz, _key = live_planar
-    assert authz.may_apply("patch src/x.py") is True
-    assert authz.last_reason == "" or "ALLOW" in (authz.last_verdict.decision if authz.last_verdict else "")
+    assert authz.may_apply("read src/x.py", kind="explore") is True
+    assert authz.last_verdict is not None
+    assert authz.last_verdict.decision == "ALLOW"
+
+
+def test_harness_authorizer_explore_is_silent_auto(live_planar):
+    """ADR 42: read-only research needs no operator prompt -> True."""
+    _base, authz, _key = live_planar
+    assert authz.may_apply("read src/x.py", kind="explore") is True
+    assert authz.last_verdict is not None
+    assert authz.last_verdict.decision == "ALLOW"
+
+
+def test_harness_authorizer_apply_requires_operator(live_planar):
+    """ADR 42: consequential apply defaults to HUMAN -> refuse until approved."""
+    _base, authz, _key = live_planar
+    assert authz.may_apply("commit -m wip", kind="apply") is False
+    assert authz.last_verdict is not None
+    assert "HUMAN" in authz.last_verdict.reason
+    # Operator acknowledges -> re-verified by control plane -> allow.
+    assert authz.may_apply("commit -m wip", kind="apply", pre_approved=True) is True
 
 
 def test_harness_authorizer_blocks_on_live_operator_halt(live_planar):
     """ADR 41 end-to-end: a live /safety/halt must stop the harness consumer."""
     base, authz, key = live_planar
     headers = {"Authorization": f"Bearer {key}"}
-    # Pre-halt: allowed.
-    assert authz.may_apply("commit -m wip") is True
+    # Pre-halt: consequential apply, operator pre-approved -> allowed.
+    assert authz.may_apply("commit -m wip", kind="apply", pre_approved=True) is True
     # Trip the operator circuit breaker over the wire.
     with httpx.Client(base_url=base, timeout=5.0) as c:
         halt = c.post("/safety/halt", headers=headers)
     assert halt.status_code == 200
     assert halt.json().get("breaker_open") is True
-    # Post-halt: the consumer MUST refuse.
-    assert authz.may_apply("commit -m wip") is False
+    # Post-halt: even a pre-approved apply MUST refuse.
+    assert authz.may_apply("commit -m wip", kind="apply", pre_approved=True) is False
     assert authz.last_verdict is not None
     assert authz.last_verdict.breaker_open is True
-    # Resume restores the consumer to allow.
+    # Resume restores the consumer to allow (pre-approved apply).
     with httpx.Client(base_url=base, timeout=5.0) as c:
         c.post("/safety/resume", headers=headers)
-    assert authz.may_apply("commit -m wip") is True
+    assert authz.may_apply("commit -m wip", kind="apply", pre_approved=True) is True
 
 
 def test_harness_authorizer_refuses_invalid_key(live_planar):
