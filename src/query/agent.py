@@ -273,6 +273,26 @@ class KnowledgeAgent:
         return verify_attestation(result.record, result.attestation,
                                  self.authority_public_key())
 
+    # --- ADR 40: knowledge-layer poison narrowing ----------------------
+    def accept(self, result: QueryResult) -> bool:
+        """Narrowing-only consumer step for knowledge poisoning (ADR 40).
+
+        Returns ``True`` ONLY if the served record carries a ``poison`` verdict of
+        ``CLEAN`` (or the service is not running the purification layer, in which
+        case there is no poison signal to refuse on). Returns ``False`` when the
+        record is POISONED — the agent must refuse to reason from it.
+
+        This is the evidence-plane mirror of ``hygiene.CorroborationLayer``: it
+        consumes the service's structural source-diversity verdict and never
+        widens a POISONED label to CLEAN. It is independent of the attestation
+        check (signature_ok) — a poisoned record can be perfectly well signed.
+        """
+        raw = result.raw or {}
+        pv = raw.get("poison")
+        if pv is None:
+            return True  # layer not in force on the service => nothing to refuse
+        return bool(pv.get("verdict") == "CLEAN")
+
     # --- drift detection -------------------------------------------------
     def reconcile(self, a: QueryResult, b: QueryResult) -> bool:
         """True iff two runs over the same query agree on the included set."""

@@ -310,6 +310,8 @@ Full API surface is in `src/service/app.py`; the console UI lives in `console/`.
 | 37 | Cross-surface root-of-trust (operator meta-key vouches for both surfaces' keys) | RATIFIED + IMPLEMENTED |
 | 38 | Live cross-surface attestation consumer (gateway key endpoint + verify-live) | RATIFIED + IMPLEMENTED |
 | 39 | Eval suite: 7,056-point decision sweep + 5,000-vector blind adversary harness, 0 false accepts/auths | RATIFIED + IMPLEMENTED |
+| 40 | Knowledge-layer source corroboration (distinct-origin quorum; ADR 24 analogue at the evidence plane) | RATIFIED + IMPLEMENTED |
+| 41 | Agent-Harness Authority Binding (Hermes + Codex sub-agents as a `decide()` consumer) | DRAFT — awaiting ratification |
 
 Full doc map: `docs/00-INDEX.md`.
 
@@ -324,13 +326,13 @@ src/
   security/           guards, operator signing, keystore, hygiene gate
   hygiene/            epistemic-hygiene / knowledge-poisoning layer
   query/              knowledge-query & evidence engine (algebra, executor, loader,
-                    compiler, attest, scope, service, agent) — ADR 27–39
+                    compiler, attest, scope, service, agent) — ADR 27–40
   config.py           all RATHNONE_* readers
 vendor/fleet_spine/   pinned, read-only snapshot of sovereign-agent-fleet
 console/              Next.js operator console
-docs/                 design surface (00-INDEX .. 39-EVAL-SUITE)
+docs/                 design surface (00-INDEX .. 40-KNOWLEDGE-POISON-GUARD)
 examples/             runnable PoCs: agent_harness.py, live_harness.py
-tests/                282 tests (gateway, security, query engine, live transport)
+tests/                294 tests (gateway, security, query engine, live transport, poison guard)
 scripts/              operator signing / scope-signing / evidence-log audit helpers
 Dockerfile            reproducible, non-root, fail-closed image
 docker-compose.yml    hardened local deployment

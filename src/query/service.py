@@ -56,6 +56,7 @@ from .compiler import compile_query
 from .executor import EvidenceRecord, KnowledgeGraph, QueryExecutor
 from .loader import graph_from_skc_artifact
 from .witness import WitnessLog, append_entry
+from .purify import PurificationLayer
 from .scope import (
     EvidenceOpAuthority,
     QueryScope,
@@ -157,6 +158,15 @@ def create_app() -> FastAPI:
     op_authority = _bootstrap_op_authority()   # None => scope enforcement dormant
     used_scope_nonces: set[int] = set()
     control_key = _CONTROL_KEY
+    # ADR 40: knowledge-layer source corroboration (the ADR 24 analogue at the
+    # evidence plane). Opt-in, fail-closed, narrowing-only. Disabled by default
+    # so local-first use and every existing suite are unaffected. When enabled,
+    # every served /query record carries a `poison` verdict (CLEAN | POISONED)
+    # computed over the retained entities' distinct registrable origins.
+    purify = PurificationLayer(
+        enabled=os.environ.get("RATHNONE_PURIFY_ENABLED") == "1",
+        quorum=int(os.environ.get("RATHNONE_PURIFY_QUORUM", "2")),
+    )
     # ADR 34: the trust log is rooted at the bootstrap entry for THIS evidence
     # key. Provisioned keys => reproducible anchor; ephemeral (local) keys => a
     # valid log the agent can still fetch, but it must pin the ephemeral anchor
@@ -275,6 +285,10 @@ def create_app() -> FastAPI:
         else:
             rec = QueryExecutor(g).execute(op)
             out = rec.as_dict()
+        # ADR 40: annotate the served record with a structural source-diversity
+        # verdict (CLEAN | POISONED). Opt-in + fail-closed + narrowing-only; the
+        # record is still served, the verdict tells the consumer to refuse poison.
+        out["poison"] = purify.evaluate(g, rec).as_dict()
         if any(v is not None for v in (expect_hash, expect_included,
                                        expect_excluded)):
             vr = rec.verify(

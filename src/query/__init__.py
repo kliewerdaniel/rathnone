@@ -84,6 +84,11 @@ from .scope import (
     enforce_constraints,
     verify_scope,
 )
+from .purify import (
+    PurificationLayer,
+    PoisonVerdict,
+    PoisonViolation,
+)
 from .service import (
     create_app,
     app as query_service_app,
@@ -139,6 +144,9 @@ __all__ = [
     "EvidenceOpAuthority",
     "enforce_constraints",
     "verify_scope",
+    "PurificationLayer",
+    "PoisonVerdict",
+    "PoisonViolation",
     "create_app",
     "query_service_app",
 ]
