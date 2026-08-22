@@ -54,6 +54,12 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.query.witness import WitnessLog, verify_witness_log  # noqa: E402
+from src.query.audit import (  # noqa: E402
+    EntityAudit,
+    assert_audit_cardinality,
+    canonical_audit_hash,
+    enumerate_entity_event_counts,
+)
 
 
 def _load_evidence_pem(path: str) -> bytes:
@@ -125,6 +131,44 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_audit(args: argparse.Namespace) -> int:
+    """ADR 45 — anchor-first audit of an in-memory KnowledgeGraph.
+
+    Loads a graph from an SKC artifact and enumerates EVERY entity (even ones
+    with zero edges / zero served records), asserting result cardinality so an
+    isolated entity is reported with event_count=0 rather than being silently
+    dropped. Optionally cross-checks against a live witness log pulled from a
+    running service, to confirm no entity was dropped between graph load and
+    served-record replay.
+    """
+    from src.query.loader import graph_from_skc_artifact
+
+    g = graph_from_skc_artifact(args.graph)
+    rows: list[EntityAudit] = enumerate_entity_event_counts(g)
+    assert_audit_cardinality(rows, g)  # fail-closed: raises on drop
+
+    print(f"audit: {len(rows)} entities (cardinality == graph entity_count)")
+
+    witness_log = None
+    if args.base_url:
+        client_get = _client_get(args.base_url, args.token)
+        log_json = _fetch_json(client_get, "/witness/log")
+        witness_log = WitnessLog.from_dict(log_json)
+        # Re-enumerate with the live witness log bound (empty-safe per entity).
+        rows = enumerate_entity_event_counts(g, witness_log=witness_log)
+        assert_audit_cardinality(rows, g)
+        print(f"cross-checked against witness log: "
+              f"{len(witness_log.entries)} entries")
+
+    print(f"{'entity_id':<20} {'type':<12} {'events':<7} {'witness':<8}")
+    print("-" * 52)
+    for r in rows:
+        print(f"{r.entity_id:<20} {r.entity_type:<12} "
+              f"{r.event_count:<7} {r.witness_hits:<8}")
+    print(f"\naudit hash: {canonical_audit_hash(rows)}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="ADR 35 witness-log operator audit")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -143,6 +187,15 @@ def main(argv: list[str] | None = None) -> int:
     x.add_argument("--token", default=None)
     x.add_argument("--out", required=True, help="output JSON path")
     x.set_defaults(func=_cmd_export)
+
+    a = sub.add_parser("audit", help="ADR 45 anchor-first entity audit of a graph")
+    a.add_argument("--graph", required=True,
+                   help="SKC artifact path to load as a KnowledgeGraph")
+    a.add_argument("--base-url", default=None,
+                   help="optional: cross-check against a live /witness/log")
+    a.add_argument("--token", default=None,
+                   help="X-Control-Plane-Key (if the service enforces one)")
+    a.set_defaults(func=_cmd_audit)
 
     args = p.parse_args(argv)
     return args.func(args)
