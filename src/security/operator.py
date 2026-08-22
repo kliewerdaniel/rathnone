@@ -185,6 +185,19 @@ class OperatorCommand:
         except Exception:
             return False
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "OperatorCommand":
+        return cls(
+            verb=d.get("verb", ""),
+            tenant_id=d.get("tenant_id", ""),
+            body_hash=d.get("body_hash", ""),
+            nonce=int(d.get("nonce", 0)),
+            timestamp=int(d.get("timestamp", 0)),
+            operator_id=d.get("operator_id", ""),
+            pubkey_pem=d.get("pubkey_pem", ""),
+            sig=d.get("sig", ""),
+        )
+
 
 # ---------------------------------------------------------------------------
 # ADR 21 — operator key lifecycle (provision / rotate / revoke / expire)
