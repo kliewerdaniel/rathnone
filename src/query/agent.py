@@ -37,9 +37,12 @@ from .attest import Attestation, EvidenceAuthority, verify_attestation
 from .executor import EvidenceRecord
 
 
+# A scope can be supplied as a QueryScope, its .as_dict() dict, or a JSON string.
+_QueryScopeLike = Any
+
+
 @dataclass
 class QueryResult:
-    """Everything an agent needs to adjudicate one query response."""
     graph_name: str
     raw: dict                                   # full service response JSON
     record: EvidenceRecord                       # re-derived from raw
@@ -67,14 +70,34 @@ class KnowledgeAgent:
     def __init__(self, client: Any, token: Optional[str] = None):
         self._client = client
         self._token = token
+        self._scope_json: Optional[str] = None
         self._public_pem: Optional[bytes] = None
         self._history: list[QueryResult] = []
 
     # --- low-level request ----------------------------------------------
     def _headers(self) -> dict[str, str]:
+        h: dict[str, str] = {}
         if self._token:
-            return {"X-Control-Plane-Key": self._token}
-        return {}
+            h["X-Control-Plane-Key"] = self._token
+        if self._scope_json:
+            h["X-Evidence-Scope"] = self._scope_json
+        return h
+
+    def set_scope(self, scope: Optional["_QueryScopeLike"]) -> None:
+        """Attach a signed ``QueryScope`` (or its JSON string / dict) that will
+        be presented on every subsequent query. Pass ``None`` to clear."""
+        from .scope import QueryScope
+        if scope is None:
+            self._scope_json = None
+            return
+        if isinstance(scope, str):
+            self._scope_json = scope
+        elif isinstance(scope, dict):
+            self._scope_json = __import__("json").dumps(scope)
+        elif isinstance(scope, QueryScope):
+            self._scope_json = __import__("json").dumps(scope.as_dict())
+        else:
+            raise TypeError(f"unsupported scope type: {type(scope)!r}")
 
     def _post(self, url: str, json: dict) -> dict:
         r = self._client.post(url, json=json, headers=self._headers())

@@ -64,6 +64,12 @@ from .agent import (
     KnowledgeAgent,
     QueryResult,
 )
+from .scope import (
+    QueryScope,
+    EvidenceOpAuthority,
+    enforce_constraints,
+    verify_scope,
+)
 from .service import (
     create_app,
     app as query_service_app,
@@ -105,6 +111,10 @@ __all__ = [
     "verify_attestation",
     "KnowledgeAgent",
     "QueryResult",
+    "QueryScope",
+    "EvidenceOpAuthority",
+    "enforce_constraints",
+    "verify_scope",
     "create_app",
     "query_service_app",
 ]
