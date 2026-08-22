@@ -52,6 +52,12 @@ from .compiler import (
     CompileError,
     compile_query,
 )
+from .witness import (
+    WitnessEntry,
+    WitnessLog,
+    append_entry,
+    verify_witness_log,
+)
 from .authority import (
     AuthorityEntry,
     AuthorityLog,
@@ -111,6 +117,10 @@ __all__ = [
     "QueryCompiler",
     "CompileError",
     "compile_query",
+    "WitnessEntry",
+    "WitnessLog",
+    "append_entry",
+    "verify_witness_log",
     "AuthorityEntry",
     "AuthorityLog",
     "verify_trust_log",

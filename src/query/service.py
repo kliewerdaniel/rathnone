@@ -14,6 +14,7 @@ Endpoints
 ``POST /query/nl``           run a query supplied as natural-language text
 ``GET  /authority/public-key``  evidence-domain public key (verify off-line)
 ``GET  /authority/trust-log``  ADR 34 evidence-authority trust log (anchored chain)
+``GET  /witness/log``         ADR 35 evidence-serving witness log (what was served to whom)
 ``POST /query/op/attested``  like /query/op, plus an Ed25519 attestation
 ``POST /query/nl/attested``  like /query/nl, plus an Ed25519 attestation
 ``GET  /health``             liveness probe
@@ -54,6 +55,7 @@ from .authority import build_bootstrap_log
 from .compiler import compile_query
 from .executor import EvidenceRecord, KnowledgeGraph, QueryExecutor
 from .loader import graph_from_skc_artifact
+from .witness import WitnessLog, append_entry
 from .scope import (
     EvidenceOpAuthority,
     QueryScope,
@@ -162,6 +164,11 @@ def create_app() -> FastAPI:
     # the operator-pinned anchor PEM.
     trust_log = build_bootstrap_log(authority.signing_key(),
                                     signer_id=authority.signer_id)
+    # ADR 35: a per-instance witness log of every attested query served. Signed
+    # by the SAME evidence key the operator anchors via ADR 34 (no new trust
+    # root). Operator can later replay it to prove which record hash was served
+    # to which agent under which scope -- and detect dropped entries.
+    witness_log: WitnessLog = WitnessLog(authority_id=authority.signer_id)
 
     def require_key(request: Request) -> None:
         _require_key(request, control_key)
@@ -337,15 +344,51 @@ def create_app() -> FastAPI:
         trusts the served root."""
         return trust_log.as_dict()
 
+    @app.get("/witness/log")
+    def witness_log_endpoint():
+        """ADR 35 — evidence-serving witness log. A tamper-evident, hash-chained,
+        signed record of every attested query this instance has served (query
+        hash, served record hash, agent id, enforced capabilities). Signed by the
+        SAME evidence key the operator anchors via ADR 34, so it verifies
+        off-line with no new trust root. A consumer can replay it to prove which
+        evidence was served to which agent -- and detect dropped entries."""
+        return witness_log.as_dict()
+
+    def _append_witness(*, query_hash: str, op: Op, scope_gate: _ScopeGate,
+                         out: dict) -> None:
+        """ADR 35: record that this attested query was served. Binds the query
+        hash, the served record hash, the (scope) agent id, and the enforced
+        capabilities into the tamper-evident witness log."""
+        from .scope import nl_binding_bytes, op_body_hash, body_hash_of
+        rec = EvidenceRecord.from_dict(out)
+        scope = scope_gate.scope
+        agent_id = scope.agent_id if scope is not None else "<unscoped>"
+        caps = list(scope.capabilities) if scope is not None else ["<allow-all>"]
+        nonlocal witness_log
+        witness_log = append_entry(
+            witness_log,
+            query_hash=query_hash,
+            record_hash=rec.deterministic_hash(),
+            agent_id=agent_id,
+            capabilities=caps,
+            sk=authority.signing_key(),
+            authority_id=authority.signer_id,
+        )
+
     def _run_attested(graph_name: str, op: Op, scope_gate: _ScopeGate,
                       expect_hash, expect_included, expect_excluded,
-                      *, body_binding_done: bool = False) -> dict:
+                      *, body_binding_done: bool = False,
+                      query_hash: str | None = None) -> dict:
         out = _run(graph_name, op, scope_gate, expect_hash,
                    expect_included, expect_excluded,
                    body_binding_done=body_binding_done)
         rec = EvidenceRecord.from_dict(out)
         att = authority.sign(rec)
         out["attestation"] = att.as_dict()
+        if query_hash is None:
+            query_hash = op_body_hash(op.to_dict())
+        _append_witness(query_hash=query_hash, op=op,
+                       scope_gate=scope_gate, out=out)
         return out
 
     @app.post("/query/op/attested")
@@ -357,7 +400,8 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400,
                                 detail=f"invalid Op specification: {exc}")
         return _run_attested(req.graph_name, op, sg, req.expect_hash,
-                             req.expect_included, req.expect_excluded)
+                             req.expect_included, req.expect_excluded,
+                             query_hash=op_body_hash(op.to_dict()))
 
     @app.post("/query/nl/attested")
     def query_nl_attested(req: NLQueryRequest, _: None = Depends(require_key),
@@ -369,7 +413,8 @@ def create_app() -> FastAPI:
                                 detail=f"could not compile query: {exc}")
         out = _run_attested(req.graph_name, op, sg, req.expect_hash,
                             req.expect_included, req.expect_excluded,
-                            body_binding_done=True)
+                            body_binding_done=True,
+                            query_hash=body_hash_of(nl_binding_bytes(req.text)))
         out["compiled_op"] = op.to_dict()
         return out
 

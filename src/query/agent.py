@@ -148,6 +148,26 @@ class KnowledgeAgent:
         self._public_pem = current_pem.encode("utf-8")
         return current_pem == log.current_pem()
 
+    def fetch_witness_log(self) -> dict:
+        """ADR 35 — fetch the service's evidence-serving witness log (raw JSON)."""
+        r = self._client.get("/witness/log")
+        if r.status_code >= 400:
+            raise RuntimeError(f"/witness/log -> {r.status_code}: {r.text}")
+        return r.json()
+
+    def verify_witness_log(self, evidence_pem: bytes) -> bool:
+        """ADR 35 — verify the served witness log off-line against a PINNED
+        evidence-domain public key (the same key the agent already anchors via
+        ADR 34 ``verify_authority()``). No new trust root: the witness log is
+        signed by the evidence key the operator already trusts. Returns True only
+        if every entry is a valid signature over a contiguous hash chain rooted
+        at the first entry.
+        """
+        from .witness import WitnessLog, verify_witness_log as _verify
+        log = WitnessLog.from_dict(self.fetch_witness_log())
+        ok, _reason = _verify(log, evidence_pem)
+        return ok
+
     # --- querying -------------------------------------------------------
     def query_nl(self, text: str, graph_name: str = "default",
                  *, attested: bool = True,
