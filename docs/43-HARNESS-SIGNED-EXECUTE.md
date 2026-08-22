@@ -202,6 +202,17 @@ presents that signature.
   against the live endpoint with a real signed `OperatorCommand` (built by
   `sign_harness_command`) — prove the consumer glue + operator-tool path agrees
   on canonicalization end-to-end.
+- `examples/harness_loop.py` (NEW): the **living consumer** — a real harness loop
+  that imports `HarnessAuthorizer` and polls `/harness/authorize` before every
+  consequential action (explore → silent AUTO, apply → requires a signed command
+  bound to the exact action). It boots the real gateway over TCP and drives the
+  full plan including the live `/safety/halt` panic button. Run with
+  `examples/harness_loop.py`; set `RATHNONE_HARNESS_NO_OPERATOR_KEY=1` to see the
+  fail-closed posture (no apply ever allowed).
+- `tests/test_harness_loop_live_tcp.py` (NEW): boots the real gateway and drives
+  `HarnessLoop` against it — proves the gate is exercised by an *actual loop*, not
+  just isolated gate tests. Asserts explore ALLOW, apply-signed ALLOW, replayed
+  nonce refused, live `/safety/halt` stops the loop, and fail-closed-without-key.
 
 ---
 
