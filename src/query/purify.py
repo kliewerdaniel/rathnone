@@ -140,12 +140,16 @@ class PurificationLayer:
     def __init__(self, *,
                  enabled: bool = False,
                  quorum: int = 2,
-                 capture_threshold: float = 0.90):
+                 capture_threshold: float = 0.90,
+                 unearned_score_floor: float = 0.5):
         if quorum < 1:
             raise ValueError(f"quorum must be >= 1, got {quorum}")
         self.enabled = enabled
         self.quorum = quorum
         self.capture_threshold = capture_threshold
+        # A retained entity with score >= this on provenance that fails the
+        # distinct-origin quorum is flagged "unearned confidence" (semantic).
+        self.unearned_score_floor = unearned_score_floor
 
     def evaluate(self, graph: KnowledgeGraph,
                  record: EvidenceRecord) -> PoisonVerdict:
@@ -194,6 +198,55 @@ class PurificationLayer:
                 {"n_distinct_origins": n_distinct,
                  "quorum": self.quorum,
                  "origins": sorted(registrable)}))
+
+        # --- 3. INTERNAL CONTRADICTION CAPTURE (semantic, corpus-sourced) -
+        # The SKC corpus flags pairs of mutually-opposing claims in its own
+        # `contradictions[]` array; the loader indexes each claim's opponents
+        # into entity.extra["contradicts"]. If a retained evidence set includes
+        # BOTH sides of a flagged opposition, the synthesized belief set is
+        # self-contradictory — an agent reasoning from it would hold opposite
+        # beliefs. This is SEMANTIC poison the corpus itself diagnosed; we do
+        # not re-derive it (no model/network), we only surface it.
+        checks += 1
+        retained_ids = {e.id for e in retained}
+        contradicted_pairs: list[tuple[str, str]] = []
+        for e in retained:
+            opp = (e.extra or {}).get("contradicts") or []
+            for o in opp:
+                if o in retained_ids and (o, e.id) not in contradicted_pairs:
+                    contradicted_pairs.append((e.id, o))
+        report["contradicted_pairs"] = contradicted_pairs
+        if contradicted_pairs:
+            violations.append(PoisonViolation(
+                "internal_contradiction",
+                f"retained evidence includes both sides of "
+                f"{len(contradicted_pairs)} corpus-flagged contradiction(s)",
+                {"pairs": contradicted_pairs}))
+
+        # --- 4. UNEARNED CONFIDENCE (semantic: score vs provenance) -----
+        # A retained entity carrying a HIGH trust score (authority/confidence)
+        # that rests on provenance failing the distinct-origin quorum has an
+        # *unearned* score: the corpus asserts trust the provenance does not
+        # support. This closes the ADR 40 "inflate authority/confidence"
+        # loophole (scores are advisory, but a high score on a single-origin /
+        # zero-origin claim is internally inconsistent). We only flag when the
+        # score is materially high AND quorum is unmet, so a legitimately
+        # diverse, high-confidence corpus is never false-flagged.
+        checks += 1
+        unearned: list[dict] = []
+        if n_distinct < self.quorum:
+            for e in doc_claim:
+                if e.score >= self.unearned_score_floor and e.source:
+                    unearned.append(
+                        {"id": e.id, "score": e.score, "source": e.source})
+        report["unearned_confidence"] = unearned
+        if unearned:
+            violations.append(PoisonViolation(
+                "unearned_confidence",
+                f"{len(unearned)} retained entity(ies) carry high trust score "
+                f"on provenance that fails the distinct-origin quorum",
+                {"entities": unearned,
+                 "score_floor": self.unearned_score_floor}))
 
         # --- 2. TOTAL-GRAPH CAPTURE (diagnosis; same POISONED outcome) ----
         checks += 1

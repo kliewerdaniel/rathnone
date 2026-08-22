@@ -166,6 +166,8 @@ def create_app() -> FastAPI:
     purify = PurificationLayer(
         enabled=os.environ.get("RATHNONE_PURIFY_ENABLED") == "1",
         quorum=int(os.environ.get("RATHNONE_PURIFY_QUORUM", "2")),
+        unearned_score_floor=float(
+            os.environ.get("RATHNONE_PURIFY_SCORE_FLOOR", "0.5")),
     )
     # ADR 34: the trust log is rooted at the bootstrap entry for THIS evidence
     # key. Provisioned keys => reproducible anchor; ephemeral (local) keys => a

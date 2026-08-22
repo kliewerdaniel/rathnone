@@ -176,3 +176,142 @@ def test_agent_refuses_poisoned_accepts_clean():
     assert agent.accept(_qr("CLEAN")) is True
     assert agent.accept(_qr("POISONED")) is False
     assert agent.accept(_qr(None)) is True  # layer not in force
+
+
+# --- semantic poison (ADR 40 extension): the corpus's OWN signal ------------
+# The SKC artifact carries a `contradictions[]` array flagging pairs of
+# mutually-opposing claims. The loader indexes each claim's opponents into
+# entity.extra["contradicts"]; the PurificationLayer flags a retained set that
+# includes BOTH sides. This is SEMANTIC poison the corpus itself diagnosed.
+
+def _claim(cid, text, confidence=0.9, doc_domain=""):
+    return {"id": cid, "text": text, "type": "fact",
+            "confidence": confidence, "doc_id": f"doc-{cid}"}
+
+
+def _artifact_with_claims_and_contradictions(domains, claims, contradictions):
+    # ensure each claim's doc_id resolves to a document
+    for i, c in enumerate(claims):
+        c.setdefault("doc_id", f"doc-claim-{i}")
+    docs = [_doc(c["doc_id"], domains[i % len(domains)] if domains else "kubernetes.io")
+            for i, c in enumerate(claims)]
+    return {
+        "schema": "research-knowledge-artifact/1.0",
+        "objective": "x",
+        "graphs": {"concept_graph": {"nodes": [], "edges": []}},
+        "documents_index": docs,
+        "claims": claims,
+        "contradictions": contradictions,
+    }
+
+
+def test_loader_indexes_corpus_contradictions():
+    claims = [
+        _claim("clm-1", "Kubernetes Secrets store sensitive information"),
+        _claim("clm-2", "Kubernetes Secrets reduce the risk of exposure"),
+        _claim("clm-3", "Kubernetes Secrets increase the risk of exposure"),
+    ]
+    contras = [{"claim_a": claims[1]["text"], "claim_b": claims[2]["text"],
+                "confidence": 0.8, "dimension": "fact"}]
+    g = graph_from_skc_artifact(
+        _artifact_with_claims_and_contradictions(
+            ["kubernetes.io", "snyk.io", "gitguardian.com"], claims, contras))
+    a = g.get("clm-2")
+    b = g.get("clm-3")
+    assert "clm-3" in (a.extra.get("contradicts") or [])
+    assert "clm-2" in (b.extra.get("contradicts") or [])
+    assert a.extra.get("contradiction_confidence") == 0.8
+
+
+def test_retaining_both_sides_of_contradiction_is_poisoned():
+    claims = [
+        _claim("clm-1", "Kubernetes Secrets store sensitive information"),
+        _claim("clm-2", "Kubernetes Secrets reduce the risk of exposure"),
+        _claim("clm-3", "Kubernetes Secrets increase the risk of exposure"),
+    ]
+    contras = [{"claim_a": claims[1]["text"], "claim_b": claims[2]["text"],
+                "confidence": 0.8, "dimension": "fact"}]
+    g = graph_from_skc_artifact(
+        _artifact_with_claims_and_contradictions(
+            ["kubernetes.io", "snyk.io", "gitguardian.com"], claims, contras))
+    rec = QueryExecutor(g).execute(Op(kind=OpKind.TYPE, arg="claim"))
+    v = PurificationLayer(enabled=True, quorum=2).evaluate(g, rec)
+    codes = {x.code for x in v.violations}
+    assert "internal_contradiction" in codes
+    assert v.verdict == "POISONED"
+    assert ("clm-2", "clm-3") in v.report["contradicted_pairs"]
+
+
+def test_retaining_one_side_of_contradiction_stays_clean():
+    claims = [
+        _claim("clm-1", "Kubernetes Secrets store sensitive information"),
+        _claim("clm-2", "Kubernetes Secrets reduce the risk of exposure"),
+        _claim("clm-3", "Kubernetes Secrets increase the risk of exposure"),
+    ]
+    contras = [{"claim_a": claims[1]["text"], "claim_b": claims[2]["text"],
+                "confidence": 0.8, "dimension": "fact"}]
+    g = graph_from_skc_artifact(
+        _artifact_with_claims_and_contradictions(
+            ["kubernetes.io", "snyk.io", "gitguardian.com"], claims, contras))
+    # Narrow the retained set to ONE side only (kubernetes.io) -> the retained
+    # set is not internally contradictory, even though it may still fail the
+    # origin quorum on its own. The point tested here is the contradiction flag.
+    rec = QueryExecutor(g).execute(Op(kind=OpKind.SOURCE, arg="kubernetes.io"))
+    v = PurificationLayer(enabled=True, quorum=2).evaluate(g, rec)
+    assert "internal_contradiction" not in {x.code for x in v.violations}
+
+
+def test_unearned_confidence_flagged():
+    claims = [
+        _claim("clm-1", "Secrets are encrypted at rest", confidence=0.95),
+        _claim("clm-2", "Secrets are encrypted in transit", confidence=0.95),
+    ]
+    g = graph_from_skc_artifact(
+        _artifact_with_claims_and_contradictions(
+            ["evil.com", "evil.com"], claims, []))
+    rec = QueryExecutor(g).execute(Op(kind=OpKind.TYPE, arg="claim"))
+    v = PurificationLayer(enabled=True, quorum=2).evaluate(g, rec)
+    codes = {x.code for x in v.violations}
+    assert "unearned_confidence" in codes
+    assert len(v.report["unearned_confidence"]) == 2
+
+
+def test_unearned_confidence_not_flagged_when_quorum_met():
+    claims = [
+        _claim("clm-1", "Secrets are encrypted at rest", confidence=0.95),
+        _claim("clm-2", "Secrets are encrypted in transit", confidence=0.9),
+    ]
+    g = graph_from_skc_artifact(
+        _artifact_with_claims_and_contradictions(
+            ["kubernetes.io", "snyk.io"], claims, []))
+    rec = QueryExecutor(g).execute(Op(kind=OpKind.TYPE, arg="claim"))
+    v = PurificationLayer(enabled=True, quorum=2).evaluate(g, rec)
+    assert "unearned_confidence" not in {x.code for x in v.violations}
+    assert v.verdict == "CLEAN"
+
+
+def test_service_annotates_semantic_poison_over_wire():
+    claims = [
+        _claim("clm-1", "Kubernetes Secrets store sensitive information"),
+        _claim("clm-2", "Kubernetes Secrets reduce the risk of exposure"),
+        _claim("clm-3", "Kubernetes Secrets increase the risk of exposure"),
+    ]
+    contras = [{"claim_a": claims[1]["text"], "claim_b": claims[2]["text"],
+                "confidence": 0.8, "dimension": "fact"}]
+    art = _artifact_with_claims_and_contradictions(
+        ["kubernetes.io", "snyk.io", "gitguardian.com"], claims, contras)
+    app = _make_app()
+    c = TestClient(app)
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(art, f)
+        path = f.name
+    c.post("/graphs/load", json={"artifact_path": path, "graph_name": "sem"})
+    # Deterministic Op query (TYPE=claim) retains both opposing claims.
+    r = c.post("/query/op",
+               json={"graph_name": "sem",
+                     "op": Op(kind=OpKind.TYPE, arg="claim").to_dict()})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["poison"]["verdict"] == "POISONED"
+    codes = {v["code"] for v in body["poison"]["violations"]}
+    assert "internal_contradiction" in codes

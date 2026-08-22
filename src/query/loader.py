@@ -103,9 +103,50 @@ def graph_from_skc_artifact(path_or_obj) -> KnowledgeGraph:
             source=doc_domain.get(c.get("doc_id"), ""),
             text=c.get("text", ""),
             score=float(c.get("confidence", 0.0) or 0.0),
+            extra={"claim_type": c.get("type", "")},
         ))
 
+    # --- contradictions (the corpus's own semantic signal) -------------
+    # The SKC artifact flags pairs of mutually-opposing claims. We do NOT
+    # re-derive contradiction with an LLM; we consume the corpus's structured
+    # contradiction list and index it onto the claim entities so a downstream
+    # guard can detect when a retained evidence set includes BOTH sides of an
+    # opposition (an agent reasoning from it would hold opposite beliefs).
+    for con in art.get("contradictions", []) or []:
+        ca, cb = con.get("claim_a"), con.get("claim_b")
+        if not ca or not cb:
+            continue
+        # Match by exact text (the corpus uses verbatim claim text) or by id
+        # if the contradiction references ids directly.
+        a_id = con.get("claim_a_id") or _claim_id_by_text(g, ca)
+        b_id = con.get("claim_b_id") or _claim_id_by_text(g, cb)
+        if a_id and b_id:
+            _add_contradiction(g, a_id, b_id, con.get("confidence"))
+            _add_contradiction(g, b_id, a_id, con.get("confidence"))
+
     return g
+
+
+def _claim_id_by_text(g: "KnowledgeGraph", text: str) -> Optional[str]:
+    t = (text or "").lower().strip()
+    if not t:
+        return None
+    for e in g.all():
+        if e.type == "claim" and e.text.strip() == t:
+            return e.id
+    return None
+
+
+def _add_contradiction(g: "KnowledgeGraph", eid: str,
+                       with_id: str, confidence: Optional[float]) -> None:
+    e = g.get(eid)
+    if e is None:
+        return
+    opp = e.extra.setdefault("contradicts", [])
+    if with_id not in opp:
+        opp.append(with_id)
+    if confidence is not None:
+        e.extra.setdefault("contradiction_confidence", confidence)
 
 
 def load_artifact(path: str) -> dict:
