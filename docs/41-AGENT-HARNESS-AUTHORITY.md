@@ -71,31 +71,46 @@ The substrate never sees a "harness" label — only the literal capability strin
 
 ## 5. The harness gate (fail-closed)
 
-A single harness-side function decides whether a Codex sub-agent may **apply**
+A single harness-side function decides whether a sub-agent may **apply**
 changes (patch/commit/destructive command). It is consulted before every apply:
 
 ```
-harness_should_proceed(action) -> ALLOW | BLOCKED | DENY_OPEN
+may_apply(action) -> True | False   # via HarnessAuthorizer.may_apply()
 ```
+
+The gate has two cooperating pieces:
+
+- **Server side** — `src.service.harness_auth.evaluate_harness_action()` and the
+  `POST /harness/authorize` route. Returns `{decision, reason, breaker_open,
+  dormant}`.
+- **Consumer side** — `src.service.harness_client.HarnessAuthorizer` (the glue
+  ADR 41 originally assumed but never shipped). A local harness (Hermes /
+  Codex) imports it and calls `may_apply(action)` *before* applying a
+  consequential change. It polls `/harness/authorize` over **real HTTP** (real
+  `httpx.Client`), so it exercises the same fail-closed decision the live
+  gateway enforces — not an in-process shortcut.
 
 Resolution order (each step fails closed):
 
 1. **Reachability** — can the Rathnone control plane be reached?
-   - Unreachable / unconfigured → **DENY_OPEN** (refuse; never run open).
-2. **Static-key gate (ADR 17)** — present `RATHNONE_API_KEY`?
-   - Missing → **DENY_OPEN**.
-3. **`decide()` verdict** — call `decide_registered(...,
+   - Unreachable / unconfigured → **refuse** (never run open). `HarnessAuthorizer`
+     returns `False` and records `reason="control-plane unreachable: …"`.
+2. **Static-key gate (ADR 17)** — present + valid `RATHNONE_API_KEY`?
+   - Missing / rejected (HTTP 401) → **refuse** (`DENY_OPEN`).
+3. **`decide()` verdict** — server calls `decide_registered(...,
    capability=CAP_FIN_AGENT_HARNESS_EXECUTE, policy_allow=<from control plane>,
    human=<operator override>)`.
-   - `BLOCKED` → **BLOCKED** (harness reports and stops).
-   - `HUMAN` → require explicit operator confirmation before proceeding.
-   - `AUTO` → **ALLOW**.
+   - `BLOCKED` → **refuse**.
+   - `HUMAN` → refuse in CI; the harness prompts the operator in this terminal.
+   - `AUTO` → **allow**.
 4. **Operator halt (ADR 19/20)** — if `/safety/halt` is tripped, the loop stops
-   regardless of `decide()`. The harness polls `/safety` and honors the breaker.
+   regardless of `decide()`. The consumer consults the live breaker via the
+   endpoint (`breaker_open` field) and refuses while it is open.
 
-When `RATHNONE_ENFORCE_AUTH=0` (dev), the gate logs `AUTH_DORMANT` and allows
-local-only scratch work (matching the rest of rathnone's dev posture), but still
-refuses to touch a non-scratch repo without an explicit `--i-understand` flag.
+When `RATHNONE_ENFORCE_AUTH=0` (dev), the gate returns `dormant=True`. The
+consumer treats `DORMANT` as a **refuse-by-default** unless the operator
+explicitly passes `allow_dormant=True` — so a misconfigured dev surface cannot
+silently run open.
 
 ## 6. Progression hook ("as rathnone progresses")
 
@@ -130,13 +145,22 @@ evolves rather than ossifying today's capability set.
   so the **same** `/harness/authorize` call now returns `BLOCKED` over TCP —
   proving the operator panic button genuinely stops the harness loop. `/
   safety/resume` restores `ALLOW`.
+- `tests/test_harness_client_live_tcp.py` — **consumer glue** (the missing half
+  of ADR 41): boots the real gateway and drives `HarnessAuthorizer.may_apply()`
+  against the live `/harness/authorize` endpoint. Asserts (a) valid key => `True`;
+  (b) a live `/safety/halt` over the wire flips the consumer to `False`
+  (`breaker_open=True`), `/safety/resume` restores `True`; (c) wrong key => `False`
+  (`DENY_OPEN`/`BLOCKED`); (d) an unreachable control plane (port 1) => `False`
+  with `reason` prefixed `control-plane unreachable` — proving fail-closed
+  (never run open) even when the plane is down.
 
-Note: the harness *function* is unit-tested for every resolution path; the live
-TCP test proves the *endpoint* honors it across a network boundary and that the
-operator halt is effective over the wire. The "stop a live background Codex
-sub-agent" claim is validated at the control-plane boundary (the harness polls
-`/harness/authorize` before each apply and refuses on anything but `ALLOW`), not
-by spawning a real Codex process in CI.
+Note: the server gate is unit-tested for every resolution path; the two live-TCP
+tests prove both halves — the *endpoint* AND the *consumer client* — honor it
+across a real network boundary, and that the operator halt is effective over the
+wire. The "stop a live background Codex sub-agent" claim is validated at the
+control-plane boundary: `HarnessAuthorizer.may_apply()` polls `/harness/authorize`
+before each apply and refuses on anything but `ALLOW`, so a tripped `/safety/halt`
+makes every subsequent apply refuse — not by spawning a real Codex process in CI.
 
 ## 8. Open questions (for ratification)
 

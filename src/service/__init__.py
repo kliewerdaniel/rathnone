@@ -9,5 +9,6 @@ from __future__ import annotations
 from .tenant import Tenant, TenantRegistry
 from .metering import MeteringLedger, AUM_FEE_RATE
 from .app import app
+from .harness_client import HarnessAuthorizer
 
-__all__ = ["Tenant", "TenantRegistry", "MeteringLedger", "AUM_FEE_RATE", "app"]
+__all__ = ["Tenant", "TenantRegistry", "MeteringLedger", "AUM_FEE_RATE", "app", "HarnessAuthorizer"]
