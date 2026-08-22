@@ -309,6 +309,7 @@ Full API surface is in `src/service/app.py`; the console UI lives in `console/`.
 | 36 | Rotation-aware witness log (per-entry key binding; audit survives key rotation) | RATIFIED + IMPLEMENTED |
 | 37 | Cross-surface root-of-trust (operator meta-key vouches for both surfaces' keys) | RATIFIED + IMPLEMENTED |
 | 38 | Live cross-surface attestation consumer (gateway key endpoint + verify-live) | RATIFIED + IMPLEMENTED |
+| 39 | Eval suite: 7,056-point decision sweep + 5,000-vector blind adversary harness, 0 false accepts/auths | RATIFIED + IMPLEMENTED |
 
 Full doc map: `docs/00-INDEX.md`.
 
@@ -323,11 +324,11 @@ src/
   security/           guards, operator signing, keystore, hygiene gate
   hygiene/            epistemic-hygiene / knowledge-poisoning layer
   query/              knowledge-query & evidence engine (algebra, executor, loader,
-                    compiler, attest, scope, service, agent) — ADR 27–38
+                    compiler, attest, scope, service, agent) — ADR 27–39
   config.py           all RATHNONE_* readers
 vendor/fleet_spine/   pinned, read-only snapshot of sovereign-agent-fleet
 console/              Next.js operator console
-docs/                 design surface (00-INDEX .. 38-LIVE-CROSS-SURFACE-CONSUMER)
+docs/                 design surface (00-INDEX .. 39-EVAL-SUITE)
 examples/             runnable PoCs: agent_harness.py, live_harness.py
 tests/                282 tests (gateway, security, query engine, live transport)
 scripts/              operator signing / scope-signing / evidence-log audit helpers
