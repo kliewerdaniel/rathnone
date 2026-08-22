@@ -287,6 +287,31 @@ def rotate_operator_key(body: _OpKeyRotate, scope: str, tenant_id: str = "",
             "layer_active": bool(target.operator_keys.active_pems())}
 
 
+@app.get("/operator/public-key")
+def operator_public_key():
+    """ADR 37 — READ-ONLY operator public-key endpoint.
+
+    Returns the gateway's current operator signing key (the key that authorizes
+    approvals and signed operator commands, ADR 19/20) so an out-of-band auditor
+    can build a cross-surface attestation manifest (``scripts/surface_attest.py``)
+    against the key the gateway is *actually* serving -- not a key it merely
+    claims about itself.
+
+    This is the public half of a key pair; exposing it is safe (mirrors the
+    evidence engine's ungated ``/authority/public-key``). It writes nothing and
+    touches no authz path. The frozen ``decide()`` spine is never referenced here.
+    """
+    import hashlib
+    pem = _operator.public_key_pem
+    fp = hashlib.sha256("".join(pem.split()).encode("utf-8")).hexdigest()
+    return {
+        "algorithm": "ed25519",
+        "operator_id": _operator.operator_id,
+        "public_key_pem": pem,
+        "key_fingerprint": fp,
+    }
+
+
 _registry = TenantRegistry()
 _meters: dict[str, MeteringLedger] = {}
 

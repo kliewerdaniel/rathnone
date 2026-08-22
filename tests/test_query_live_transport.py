@@ -225,6 +225,50 @@ def test_adr34_35_authority_and_witness_audit_over_wire(live):
     client.close()
 
 
+def test_adr35_drift_detection_over_wire(live):
+    """ADR 35 + agent DRIFT DETECTION over the wire.
+
+    The agent can re-run a query and confirm the served included-set has not
+    silently drifted (a substituted or dropped evidence entry). This exercises
+    the SAME off-line reconcile path the witness log uses, but against LIVE
+    served results -- proving the engine returns a stable record set across
+    independent requests rather than a per-request reshuffle.
+    """
+    base, op_authority, _ = live
+    client = httpx.Client(base_url=base, timeout=5.0)
+    agent = KnowledgeAgent(client)
+    path = os.environ.get("RATHNONE_SKC_ARTIFACT", _SKC_DEFAULT)
+    agent.load_graph(path, graph_name="skc")
+
+    text = "research about optimization connected to convex"
+    # First run captures a baseline included-set.
+    s1 = _mint(op_authority, graph_name="skc", agent_id="drift",
+               body_hash=body_hash_of(nl_binding_bytes(text)),
+               capabilities=[], max_results=1000, nonce=41)
+    agent.set_scope(s1)
+    first = agent.query_nl(text, graph_name="skc")
+    agent.set_scope(None)
+    assert first.signature_ok is True
+
+    # assert_stable re-runs under a FRESH scope and reconciles the included set
+    # against `first`. It must return True (no drift) over the wire.
+    s2 = _mint(op_authority, graph_name="skc", agent_id="drift",
+               body_hash=body_hash_of(nl_binding_bytes(text)),
+               capabilities=[], max_results=1000, nonce=42)
+    agent.set_scope(s2)
+    assert agent.assert_stable(text, graph_name="skc") is True
+
+    # Independent reconcile() between two explicit live runs must agree.
+    s3 = _mint(op_authority, graph_name="skc", agent_id="drift",
+               body_hash=body_hash_of(nl_binding_bytes(text)),
+               capabilities=[], max_results=1000, nonce=43)
+    agent.set_scope(s3)
+    second = agent.query_nl(text, graph_name="skc")
+    agent.set_scope(None)
+    assert agent.reconcile(first, second) is True
+    client.close()
+
+
 def test_adr36_live_key_rotation_keeps_witness_audit_verifiable(live):
     """ADR 36 — rotate the evidence key LIVE (no redeploy) and prove the
     witness log stays verifiable ROTATION-AWARE, over a real socket.

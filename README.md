@@ -9,7 +9,7 @@ that an operator can audit and halt:
    govern consequential finance actions (trade execution, treasury rebalance,
    on-chain settlement) with cryptographic verifiability and an immutable audit
    ledger.
-2. **Knowledge-Query & Evidence Engine** (`src/query/`, ADR 27–35) — a
+2. **Knowledge-Query & Evidence Engine** (`src/query/`, ADR 27–38) — a
    deterministic, attestable knowledge-execution substrate for agents: an LLM
    *constructs* a logical query (`Op` algebra); Rathnone *compiles and executes*
    it to an inspectable, reproducibly-hashed `EvidenceRecord`, and serves it over
@@ -121,7 +121,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 # The frozen spine is vendored at vendor/fleet_spine (pinned commit in
 # vendor/fleet_spine/PINNED_COMMIT). The venv's fleet_overlay.pth points there.
-pytest -q                       # 263 passing
+pytest -q                       # 282 passing
 
 # --- Finance Gateway ---
 RATHNONE_MAX_SETTLEMENT_VALUE_WEI=500000000000000000 \
@@ -306,6 +306,9 @@ Full API surface is in `src/service/app.py`; the console UI lives in `console/`.
 | 33 | Live-transport service (real TCP boundary) | RATIFIED + IMPLEMENTED |
 | 34 | Evidence-authority trust log (anchorable rotate/revoke; no TOFU) | RATIFIED + IMPLEMENTED |
 | 35 | Evidence-serving witness log (audit what record hash went to which agent) | RATIFIED + IMPLEMENTED |
+| 36 | Rotation-aware witness log (per-entry key binding; audit survives key rotation) | RATIFIED + IMPLEMENTED |
+| 37 | Cross-surface root-of-trust (operator meta-key vouches for both surfaces' keys) | RATIFIED + IMPLEMENTED |
+| 38 | Live cross-surface attestation consumer (gateway key endpoint + verify-live) | RATIFIED + IMPLEMENTED |
 
 Full doc map: `docs/00-INDEX.md`.
 
@@ -320,13 +323,13 @@ src/
   security/           guards, operator signing, keystore, hygiene gate
   hygiene/            epistemic-hygiene / knowledge-poisoning layer
   query/              knowledge-query & evidence engine (algebra, executor, loader,
-                     compiler, attest, scope, service, agent) — ADR 27–35
+                    compiler, attest, scope, service, agent) — ADR 27–38
   config.py           all RATHNONE_* readers
 vendor/fleet_spine/   pinned, read-only snapshot of sovereign-agent-fleet
 console/              Next.js operator console
-docs/                 design surface (00-INDEX .. 35-EVIDENCE-WITNESS-LOG)
+docs/                 design surface (00-INDEX .. 38-LIVE-CROSS-SURFACE-CONSUMER)
 examples/             runnable PoCs: agent_harness.py, live_harness.py
-tests/                263 tests (gateway, security, query engine, live transport)
+tests/                282 tests (gateway, security, query engine, live transport)
 scripts/              operator signing / scope-signing / evidence-log audit helpers
 Dockerfile            reproducible, non-root, fail-closed image
 docker-compose.yml    hardened local deployment

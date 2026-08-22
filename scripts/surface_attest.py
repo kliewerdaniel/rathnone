@@ -101,6 +101,22 @@ def main() -> int:
     v.add_argument("--served-pubkey-pem", action="append", default=[],
                    help="path to the surface's currently-served pubkey PEM "
                         "(parallel to --surface)")
+    v.add_argument("--live-url", action="append", default=[],
+                   help="base URL of a running surface to FETCH the served key "
+                        "from (e.g. http://127.0.0.1:8765 for gateway, "
+                        "http://127.0.0.1:8791 for knowledge). Parallel to "
+                        "--surface. The key is read from /operator/public-key "
+                        "(gateway) or /authority/public-key (knowledge).")
+
+    vl = sub.add_parser("verify-live",
+                        help="fetch live served keys over HTTP and check the "
+                             "manifest against BOTH running surfaces")
+    vl.add_argument("--root", required=True, help="operator root PUBLIC PEM")
+    vl.add_argument("--manifest", required=True, help="manifest JSON")
+    vl.add_argument("--gateway-url", required=True,
+                    help="base URL of the running finance gateway")
+    vl.add_argument("--knowledge-url", required=True,
+                    help="base URL of the running knowledge-query engine")
 
     args = ap.parse_args()
 
@@ -141,14 +157,25 @@ def main() -> int:
             print("ERROR: --surface/--served-pubkey-pem must be parallel lists",
                   file=sys.stderr)
             return 2
+        # Optional: fetch served keys from live URLs instead of PEM files.
+        live_keys: dict[str, bytes] = {}
+        if getattr(args, "live_url", None):
+            if len(args.surface) != len(args.live_url):
+                print("ERROR: --surface/--live-url must be parallel lists",
+                      file=sys.stderr)
+                return 2
+            for sid, url in zip(args.surface, args.live_url):
+                live_keys[sid] = _fetch_served_key(url, sid)
         with open(args.manifest, "r", encoding="utf-8") as fh:
             manifest = SurfaceAttestationManifest.from_dict(json.load(fh))
         ok, reason = verify_manifest(manifest, _load_pub(args.root))
         report = {"manifest_signature_ok": ok, "manifest_reason": reason}
         if ok:
-            for sid, served_path in zip(args.surface, args.served_pubkey_pem):
-                s_ok, s_reason = check_surface(
-                    manifest, sid, _load_pub(served_path))
+            for sid in args.surface:
+                served = live_keys.get(sid) or _load_pub(
+                    # served-pubkey-pem parallel to --surface
+                    dict(zip(args.surface, args.served_pubkey_pem))[sid])
+                s_ok, s_reason = check_surface(manifest, sid, served)
                 report[f"surface:{sid}:matches_vouched"] = s_ok
                 report[f"surface:{sid}:reason"] = s_reason
         print(json.dumps(report, indent=2))
@@ -157,7 +184,47 @@ def main() -> int:
             report.get(f"surface:{sid}:matches_vouched") for sid in args.surface
         ) else 1
 
+    if args.cmd == "verify-live":
+        # Fetch BOTH running surfaces' served keys over HTTP and check the
+        # manifest against the operator-vouched keys. This is the live consumer
+        # of the ADR 37 manifest: it proves the deployed gateway and knowledge
+        # engine are both currently signing with keys the operator trusts --
+        # not keys they merely claim about themselves.
+        import httpx
+        gw_key = _fetch_served_key(args.gateway_url, "gateway")
+        kn_key = _fetch_served_key(args.knowledge_url, "knowledge")
+        with open(args.manifest, "r", encoding="utf-8") as fh:
+            manifest = SurfaceAttestationManifest.from_dict(json.load(fh))
+        ok, reason = verify_manifest(manifest, _load_pub(args.root))
+        report = {"manifest_signature_ok": ok, "manifest_reason": reason}
+        if ok:
+            for sid, served in (("gateway", gw_key), ("knowledge-query", kn_key)):
+                s_ok, s_reason = check_surface(manifest, sid, served)
+                report[f"surface:{sid}:matches_vouched"] = s_ok
+                report[f"surface:{sid}:reason"] = s_reason
+        print(json.dumps(report, indent=2))
+        all_ok = ok and report.get("surface:gateway:matches_vouched", False) \
+            and report.get("surface:knowledge-query:matches_vouched", False)
+        return 0 if all_ok else 1
+
     return 2
+
+
+def _fetch_served_key(base_url: str, surface_id: str) -> bytes:
+    """READ-ONLY: fetch a running surface's currently-served public key over HTTP.
+
+    Gateway exposes its operator key at /operator/public-key; the knowledge
+    engine exposes its evidence key at /authority/public-key. Both are public,
+    ungated endpoints that write nothing. Returns the raw PEM bytes.
+    """
+    import httpx
+    path = "/operator/public-key" if surface_id == "gateway" else \
+        "/authority/public-key"
+    with httpx.Client(base_url=base_url, timeout=5.0) as c:
+        r = c.get(path)
+        r.raise_for_status()
+        data = r.json()
+    return data["public_key_pem"].encode("utf-8")
 
 
 if __name__ == "__main__":

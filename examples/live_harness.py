@@ -259,6 +259,41 @@ def main() -> int:
         # The single-key verify must now REJECT the rotated log (by design).
         results["adr36_singlekey_verify_rejects_rotated"] = \
             (agent.verify_witness_log(anchor_pem) is False)
+
+        # 8. ADR 35 + agent DRIFT DETECTION over the wire. The agent can re-run
+        #    a query and confirm the served included-set has not silently drifted
+        #    (a substituted or dropped evidence entry). This exercises the SAME
+        #    off-line reconcile path the witness log uses, but against LIVE
+        #    served results -- proving the engine returns a stable record set
+        #    across independent requests (not a per-request reshuffle).
+        drift_text = "research about optimization connected to convex"
+        d_scope = _mint_scope(
+            op_authority, graph_name="skc", agent_id="live-agent",
+            body_hash=body_hash_of(nl_binding_bytes(drift_text)),
+            capabilities=[], max_results=1000, nonce=6)
+        agent.set_scope(d_scope)
+        first_drift = agent.query_nl(drift_text, graph_name="skc")
+        agent.set_scope(None)
+        # assert_stable() re-runs under a FRESH scope and reconciles the included
+        # set against `first_drift`. It must return True (no drift) over the wire.
+        d_scope2 = _mint_scope(
+            op_authority, graph_name="skc", agent_id="live-agent",
+            body_hash=body_hash_of(nl_binding_bytes(drift_text)),
+            capabilities=[], max_results=1000, nonce=7)
+        agent.set_scope(d_scope2)
+        results["adr35_live_drift_check_stable"] = agent.assert_stable(
+            drift_text, graph_name="skc")
+        # Independent reconcile() between two explicit live runs must agree.
+        # assert_stable() already consumed d_scope2; use a FRESH scope here.
+        d_scope3 = _mint_scope(
+            op_authority, graph_name="skc", agent_id="live-agent",
+            body_hash=body_hash_of(nl_binding_bytes(drift_text)),
+            capabilities=[], max_results=1000, nonce=8)
+        agent.set_scope(d_scope3)
+        second_drift = agent.query_nl(drift_text, graph_name="skc")
+        agent.set_scope(None)
+        results["adr35_live_reconcile_agrees"] = agent.reconcile(
+            first_drift, second_drift)
     finally:
         stop.set()
         t.join(timeout=5.0)
