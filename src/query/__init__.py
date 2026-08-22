@@ -52,6 +52,14 @@ from .compiler import (
     CompileError,
     compile_query,
 )
+from .attest import (
+    Attestation,
+    EvidenceAuthority,
+    generate_keypair,
+    load_private_key,
+    load_public_key,
+    verify_attestation,
+)
 from .service import (
     create_app,
     app as query_service_app,
@@ -85,6 +93,12 @@ __all__ = [
     "QueryCompiler",
     "CompileError",
     "compile_query",
+    "Attestation",
+    "EvidenceAuthority",
+    "generate_keypair",
+    "load_private_key",
+    "load_public_key",
+    "verify_attestation",
     "create_app",
     "query_service_app",
 ]

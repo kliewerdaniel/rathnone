@@ -134,6 +134,24 @@ class EvidenceRecord:
             "deterministic_hash": self.deterministic_hash(),
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "EvidenceRecord":
+        rec = cls()
+        rec.included = [
+            _Entry(id=e["id"], reasons=list(e.get("reasons", [])),
+                   predicates=list(e.get("predicates", [])),
+                   source=e.get("source", ""))
+            for e in d.get("included", [])
+        ]
+        rec.excluded = [
+            _Entry(id=e["id"], reasons=list(e.get("reasons", [])),
+                   predicates=list(e.get("predicates", [])),
+                   source=e.get("source", ""))
+            for e in d.get("excluded", [])
+        ]
+        rec.plan = list(d.get("plan", []))
+        return rec
+
     # --- reconciliation -------------------------------------------------
     def verify(self, *, expect_hash: str | None = None,
                expect_included: set[str] | None = None,
