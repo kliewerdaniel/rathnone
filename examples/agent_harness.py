@@ -85,6 +85,42 @@ def main() -> int:
     rechecked = agent.verify_signature(nl)
     results["offline_reverify_independent"] = rechecked == nl.signature_ok
 
+    # 7. ADR 32 -- evidence-operation scope. Provision the op authority, mint a
+    #    signed scope (MATCH only, cap 50 results) with the app's key, set it on
+    #    the agent, and prove a scoped query succeeds. We also prove the service
+    #    refuses a request that lacks a scope header (401) when provisioned.
+    from src.query.attest import generate_keypair
+    from src.query.scope import EvidenceOpAuthority, QueryScope, op_body_hash
+    from src.query.algebra import Op
+
+    sk_pem, _ = generate_keypair()
+    os.environ["RATHNONE_EVIDENCE_OP_KEY_PEM"] = sk_pem.decode("utf-8")
+    scoped_client = TestClient(create_app())
+    del os.environ["RATHNONE_EVIDENCE_OP_KEY_PEM"]
+    scoped_agent = KnowledgeAgent(scoped_client)
+    scoped_agent.load_graph(artifact, graph_name="skc")
+
+    now = __import__("time").time_ns()
+    authority = EvidenceOpAuthority.from_pem("evidence-op-authority", sk_pem)
+    op = {"kind": "MATCH", "arg": "learning"}
+    bound = Op.from_dict(op).to_dict()
+    scope = QueryScope(
+        graph_name="skc", agent_id="harness-agent", capabilities=["MATCH"],
+        max_results=50, not_before=now, not_after=now + 3_600_000_000_000,
+        nonce=1, operator_id="evidence-op",
+        pubkey_pem=authority.public_pem(), body_hash=op_body_hash(bound))
+    authority.sign(scope)
+    scoped_agent.set_scope(scope)
+    scoped_ok = scoped_agent.query_op(op, graph_name="skc", attested=False)
+    results["scope_allows_in_capability_query"] = bool(scoped_ok.raw) \
+        and "included" in scoped_ok.raw
+    scoped_agent.set_scope(None)
+    # Without a scope header the provisioned service must refuse (401).
+    refused = scoped_client.post(
+        "/query/op", json={"graph_name": "skc", "op": op},
+        headers=scoped_agent._headers())
+    results["scope_required_when_provisioned"] = refused.status_code == 401
+
     # --- report --------------------------------------------------------
     passed = sum(1 for v in results.values() if v)
     failed = [name for name, ok in results.items() if not ok]
