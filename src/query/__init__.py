@@ -52,6 +52,10 @@ from .compiler import (
     CompileError,
     compile_query,
 )
+from .service import (
+    create_app,
+    app as query_service_app,
+)
 
 __all__ = [
     "Op",
@@ -81,4 +85,6 @@ __all__ = [
     "QueryCompiler",
     "CompileError",
     "compile_query",
+    "create_app",
+    "query_service_app",
 ]

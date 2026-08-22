@@ -71,6 +71,15 @@ class KnowledgeGraph:
     def all(self) -> list[Entity]:
         return list(self._ents.values())
 
+    def entity_count(self) -> int:
+        return len(self._ents)
+
+    def edge_count(self) -> int:
+        # `link` stores both directions, so halve the adjacency footprint to
+        # report undirected edges once.
+        total = sum(len(v) for v in self._adj.values())
+        return total // 2 if total else 0
+
     def neighbors(self, eid: str, kind: Optional[str] = None) -> list[Entity]:
         out = []
         for e in self._adj.get(eid, []):
